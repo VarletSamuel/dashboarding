@@ -1,0 +1,61 @@
+/* Cosmos RU dashboard local styles only */
+#file-input { display: none; }
+#dashboardScreen { display: none; }
+
+.table-wrap { overflow-x: auto; }
+.ru-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.ru-table th {
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+.ru-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.ru-table tbody tr:hover { background: var(--surface-2); }
+.ru-table td.num { text-align: right; font-family: var(--font-mono); }
+
+.badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+.badge--yes { background: var(--green-dim); color: var(--green); }
+.badge--no  { background: var(--red-dim); color: var(--red); }
+
+.mono { font-family: var(--font-mono); }
+.small-dim { font-size: 12px; color: var(--text-dim); }
+
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+}
+
+.card-note {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  margin-bottom: 10px;
+}
+

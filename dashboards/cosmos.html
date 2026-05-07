@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cosmos RU Dashboard</title>
+<link rel="icon" type="image/png" href="../bin/delaware-dee-rgb.png">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../bin/dashboard-core.css">
+<link rel="stylesheet" href="../bin/dashboard-cosmos.css">
+<script src="../bin/storage-loader.js"></script>
+<script src="../bin/filter-bar-helper.js"></script>
+<script>
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+
+</head>
+<body class="ambient-glow">
+
+<!-- Upload screen -->
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+  <h1>Cosmos RU Dashboard</h1>
+  <p>Upload the <strong>cosmos_ru_*.csv</strong> file exported by <code>get_cosmos_ru.py</code>. Parsing is local in your browser.</p>
+  <div id="upload-zone" class="drop-zone">
+    <div class="icon">🪐</div>
+    <div class="label">Drop your CSV file here</div>
+    <div class="hint">or click to browse</div>
+  </div>
+  <input type="file" id="file-input" accept=".csv"
+         title="Expected file: *_cosmos_ru_*.csv (exported by the Cosmos RU extractor)">
+  <div style="margin-top:8px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+    <button class="btn btn--ghost" onclick="loadDemo()">Load Demo Data</button>
+  </div>
+</div>
+
+<!-- Dashboard -->
+<div id="dashboardScreen">
+  <div class="topbar">
+    <h1><img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle"><span id="dashTitle">Cosmos RU Dashboard</span></h1>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+      <button class="topbar-btn" id="reloadBtn">↩ Load another CSV</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+
+  <div class="filter-bar" id="filterBar"></div>
+  <div class="kpi-row" id="kpis"></div>
+
+  <div class="env-section" id="sect-overview">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>RU Reservation Overview</h2>
+      <span class="env-summary" id="overviewSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-2">
+          <div class="card">
+            <h2>Top Accounts by Effective RU</h2>
+            <div class="card-note">Uses deduplicated RU totals: shared database RU is counted once per database.</div>
+            <div class="table-wrap"><table class="ru-table" id="topAccountsTable"></table></div>
+          </div>
+          <div class="card">
+            <h2>RI Candidate Buckets</h2>
+            <div class="card-note">Quick grouping for reservation sizing conversations.</div>
+            <div class="table-wrap"><table class="ru-table" id="bucketTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="env-section" id="sect-details">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>Detailed RU Entities</h2>
+      <span class="env-summary" id="detailSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full">
+          <div class="card">
+            <div class="table-wrap"><table class="ru-table" id="detailTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let ALL_ROWS = [];
+let FILTER_OPTIONS = {};
+let ACTIVE_FILTERS = {};
+
+const FILTER_DEFS = [
+  { key: 'subscription_name', label: 'Subscription', icon: '📋' },
+  { key: 'api_model', label: 'API', icon: '🧩' },
+  { key: 'resource_group', label: 'Resource Group', icon: '📦' },
+  { key: 'provisioned_at', label: 'Provisioned At', icon: '⚙️' },
+  { key: 'reserved_capacity_candidate', label: 'RI Candidate', icon: '🏷️' },
+];
+
+function esc(v){ const d=document.createElement('div'); d.textContent=v ?? ''; return d.innerHTML; }
+function toNum(v){ if(v==null || v==='') return null; const n = Number(String(v).replace(',', '.')); return Number.isFinite(n) ? n : null; }
+function fmtRu(v){ return v == null ? 'N/A' : Number(v).toLocaleString('en-US'); }
+
+function parseCSV(text){
+  if(text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if(lines.length < 2) return [];
+  const headers = lines[0].split(';').map(h => h.trim());
+  const rows = [];
+  for(let i=1;i<lines.length;i++){
+    const vals = lines[i].split(';');
+    const row = {};
+    headers.forEach((h,j)=> row[h] = (vals[j] || '').trim());
+    row.effective_ru_num = toNum(row.effective_ru);
+    rows.push(row);
+  }
+  return rows;
+}
+
+function extractFilterOptions(rows){
+  const out = {};
+  FILTER_DEFS.forEach(def => {
+    const set = new Set();
+    rows.forEach(r => { if((r[def.key] || '').trim()) set.add(r[def.key].trim()); });
+    out[def.key] = [...set].sort((a,b) => a.localeCompare(b));
+  });
+  return out;
+}
+
+function initFilters(){
+  ACTIVE_FILTERS = {};
+  FILTER_DEFS.forEach(def => ACTIVE_FILTERS[def.key] = new Set());
+}
+
+// buildFilterBar moved to bin/filter-bar-helper.js
+
+// onFilterCheck moved to bin/filter-bar-helper.js
+
+function toggleSection(headerEl){
+  headerEl.closest('.env-section').classList.toggle('collapsed');
+}
+
+function filteredRows(){
+  return ALL_ROWS.filter(r => {
+    for(const def of FILTER_DEFS){
+      const set = ACTIVE_FILTERS[def.key];
+      if(set && set.size && !set.has((r[def.key] || '').trim())) return false;
+    }
+    return true;
+  });
+}
+
+function dedupeKey(r){
+  const sub = r.subscription_id || '';
+  const acc = r.account_name || '';
+  const api = r.api_model || '';
+  const db = r.database_name || '';
+  const entity = r.container_name || '';
+  const p = r.provisioned_at || '';
+  if(p.startsWith('Database')) return `${sub}|${acc}|${api}|${db}|db-shared`;
+  return `${sub}|${acc}|${api}|${db}|${entity}`;
+}
+
+function uniqueRuRows(rows){
+  const map = new Map();
+  for(const r of rows){
+    const key = dedupeKey(r);
+    if(!map.has(key)) map.set(key, r);
+  }
+  return [...map.values()];
+}
+
+function renderKpis(rows){
+  const k = document.getElementById('kpis');
+  if(!rows.length){
+    k.innerHTML = '<div class="kpi"><div class="label">No data</div><div class="value">—</div></div>';
+    return;
+  }
+
+  const uniq = uniqueRuRows(rows);
+  const subCount = new Set(rows.map(r => r.subscription_id || r.subscription_name)).size;
+  const accCount = new Set(rows.map(r => `${r.subscription_id}|${r.account_name}`)).size;
+  const candidate = uniq.filter(r => (r.reserved_capacity_candidate || '').toLowerCase() === 'yes').length;
+  const totalUniqueRU = uniq.reduce((s, r) => s + (r.effective_ru_num || 0), 0);
+  const totalRawRU = rows.reduce((s, r) => s + (r.effective_ru_num || 0), 0);
+
+  k.innerHTML = `
+    <div class="kpi"><div class="label">Subscriptions</div><div class="value">${subCount}</div></div>
+    <div class="kpi"><div class="label">Accounts</div><div class="value">${accCount}</div></div>
+    <div class="kpi"><div class="label">RU Entities (Deduped)</div><div class="value">${uniq.length}</div></div>
+    <div class="kpi"><div class="label">RI Candidates</div><div class="value">${candidate}</div></div>
+    <div class="kpi"><div class="label">Effective RU (Deduped)</div><div class="value mono">${fmtRu(totalUniqueRU)}</div></div>
+    <div class="kpi"><div class="label">Effective RU (Raw Rows)</div><div class="value mono">${fmtRu(totalRawRU)}</div></div>`;
+
+  document.getElementById('overviewSummary').textContent = `${uniq.length} unique entities · ${fmtRu(totalUniqueRU)} effective RU`;
+  document.getElementById('detailSummary').textContent = `${rows.length} row(s) after filters`;
+}
+
+function renderTopAccounts(rows){
+  const uniq = uniqueRuRows(rows);
+  const byAcc = new Map();
+  uniq.forEach(r => {
+    const key = `${r.subscription_name || r.subscription_id}|${r.account_name}`;
+    if(!byAcc.has(key)){
+      byAcc.set(key, {
+        subscription: r.subscription_name || r.subscription_id || '',
+        account: r.account_name || '',
+        apiModels: new Set(),
+        ru: 0,
+        entities: 0,
+      });
+    }
+    const item = byAcc.get(key);
+    item.apiModels.add(r.api_model || '');
+    item.ru += r.effective_ru_num || 0;
+    item.entities += 1;
+  });
+
+  const sorted = [...byAcc.values()].sort((a,b) => b.ru - a.ru).slice(0, 20);
+  const t = document.getElementById('topAccountsTable');
+  t.innerHTML = `
+    <thead><tr>
+      <th>Subscription</th><th>Account</th><th>API</th><th class="num">Entities</th><th class="num">Effective RU</th>
+    </tr></thead>
+    <tbody>${sorted.map(s => `
+      <tr>
+        <td>${esc(s.subscription)}</td>
+        <td>${esc(s.account)}</td>
+        <td>${esc([...s.apiModels].filter(Boolean).sort().join(', '))}</td>
+        <td class="num">${s.entities}</td>
+        <td class="num">${fmtRu(s.ru)}</td>
+      </tr>`).join('')}</tbody>`;
+}
+
+function renderBuckets(rows){
+  const uniq = uniqueRuRows(rows).filter(r => (r.effective_ru_num || 0) > 0);
+
+  const buckets = [
+    { name: 'Small (<= 1k RU)', min: 0, max: 1000, suggestion: 'Consolidate if possible' },
+    { name: 'Medium (1k-5k RU)', min: 1001, max: 5000, suggestion: 'Review 1-year reservation' },
+    { name: 'Large (5k-20k RU)', min: 5001, max: 20000, suggestion: 'Strong RI candidate' },
+    { name: 'XL (> 20k RU)', min: 20001, max: Number.MAX_SAFE_INTEGER, suggestion: 'Prioritize RI modeling' },
+  ];
+
+  const data = buckets.map(b => {
+    const items = uniq.filter(r => {
+      const ru = r.effective_ru_num || 0;
+      return ru >= b.min && ru <= b.max;
+    });
+    const total = items.reduce((s,r) => s + (r.effective_ru_num || 0), 0);
+    return { ...b, count: items.length, total };
+  });
+
+  const t = document.getElementById('bucketTable');
+  t.innerHTML = `
+    <thead><tr><th>Bucket</th><th class="num">Entities</th><th class="num">Total RU</th><th>Recommendation</th></tr></thead>
+    <tbody>${data.map(d => `
+      <tr>
+        <td>${d.name}</td>
+        <td class="num">${d.count}</td>
+        <td class="num">${fmtRu(d.total)}</td>
+        <td>${d.suggestion}</td>
+      </tr>`).join('')}</tbody>`;
+}
+
+function renderDetails(rows){
+  const sorted = [...rows].sort((a,b) => (b.effective_ru_num || 0) - (a.effective_ru_num || 0));
+  const t = document.getElementById('detailTable');
+  t.innerHTML = `
+    <thead><tr>
+      <th>Subscription</th><th>Account</th><th>API</th><th>Resource Group</th><th>Database</th><th>Entity</th><th>Kind</th><th>Provisioned At</th>
+      <th class="num">Manual RU</th><th class="num">Autoscale Max RU</th><th class="num">Effective RU</th><th>RI Candidate</th>
+    </tr></thead>
+    <tbody>${sorted.slice(0, 800).map(r => `
+      <tr>
+        <td>${esc(r.subscription_name || r.subscription_id || '')}</td>
+        <td>${esc(r.account_name || '')}</td>
+        <td>${esc(r.api_model || '')}</td>
+        <td>${esc(r.resource_group || '')}</td>
+        <td>${esc(r.database_name || '')}</td>
+        <td>${esc(r.container_name || '')}</td>
+        <td>${esc(r.entity_kind || '')}</td>
+        <td>${esc(r.provisioned_at || '')}</td>
+        <td class="num">${fmtRu(toNum(r.manual_ru))}</td>
+        <td class="num">${fmtRu(toNum(r.autoscale_max_ru))}</td>
+        <td class="num">${fmtRu(r.effective_ru_num)}</td>
+        <td>${(r.reserved_capacity_candidate || '').toLowerCase() === 'yes' ? '<span class="badge badge--yes">Yes</span>' : '<span class="badge badge--no">No</span>'}</td>
+      </tr>`).join('')}</tbody>`;
+}
+
+function renderAll(){
+  const rows = filteredRows();
+  renderKpis(rows);
+  renderTopAccounts(rows);
+  renderBuckets(rows);
+  renderDetails(rows);
+}
+
+function showDashboard(filename){
+  document.getElementById('uploadScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'block';
+
+  let customer = '';
+  if(filename){
+    const m = filename.match(/cosmos_ru_(\w+)_\d{8}_\d{4}\.csv/i);
+    if(m) customer = m[1];
+  }
+  document.getElementById('dashTitle').textContent = (customer ? `${customer} — ` : '') + 'Cosmos RU Dashboard';
+
+  const subs = new Set(ALL_ROWS.map(r => r.subscription_name || r.subscription_id).filter(Boolean));
+  document.getElementById('dashMeta').textContent = `${ALL_ROWS.length} rows · ${subs.size} subscriptions`;
+
+  FILTER_OPTIONS = extractFilterOptions(ALL_ROWS);
+  initFilters();
+  buildFilterBar();
+  renderAll();
+}
+
+function handleFile(file){
+  const reader = new FileReader();
+  reader.onload = e => {
+    try{
+      const rows = parseCSV(e.target.result || '');
+      if(!rows.length){ alert('No data rows found in CSV.'); return; }
+      ALL_ROWS = rows;
+      showDashboard(file.name || '');
+    } catch(err){
+      alert('Error parsing CSV: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function loadDemo(){
+  const hdr = 'subscription_id;subscription_name;account_name;resource_group;api_model;database_name;container_name;entity_kind;provisioned_at;manual_ru;autoscale_max_ru;effective_ru;reserved_capacity_candidate';
+  const rows = [
+    '1111;demo-prod;cosmos-demo-001;rg-demo;MongoDB;orders;order-events;container;Container;400;4000;4000;Yes',
+    '1111;demo-prod;cosmos-demo-001;rg-demo;MongoDB;orders;order-views;container;Database (Shared);1000;6000;6000;Yes',
+    '1111;demo-prod;cosmos-demo-001;rg-demo;MongoDB;orders;order-stats;container;Database (Shared);1000;6000;6000;Yes',
+    '1111;demo-prod;cosmos-demo-002;rg-demo;SQL;inventory;items;container;Container;100;1000;1000;Yes',
+    '2222;demo-nonprod;cosmos-demo-003;rg-demo-np;Gremlin;graphdb;vertices;container;Container;200;2000;2000;Yes',
+    '2222;demo-nonprod;cosmos-demo-003;rg-demo-np;Gremlin;graphdb;edges;container;Container;200;2000;2000;Yes',
+    '3333;demo-dev;cosmos-demo-004;rg-dev;SQL;devdb;requests;container;Serverless;;;;No',
+  ];
+  ALL_ROWS = parseCSV([hdr, ...rows].join('\n'));
+  showDashboard('cosmos_ru_DEMO_20260422_0000.csv');
+}
+
+const zone = document.getElementById('upload-zone');
+const fileInput = document.getElementById('file-input');
+zone.addEventListener('click', () => fileInput.click());
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', e => {
+  e.preventDefault();
+  zone.classList.remove('dragover');
+  if(e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e => {
+  if (!e.target.files.length) return;
+  const f = e.target.files[0];
+  if (!/cosmos/i.test(f.name) &&
+      !confirm(`"${f.name}" doesn't look like a Cosmos RU export.\nExpected a filename containing "cosmos".\n\nLoad it anyway?`)) {
+    fileInput.value = ''; return;
+  }
+  handleFile(f);
+  fileInput.value = '';
+});
+
+document.getElementById('reloadBtn').addEventListener('click', () => {
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('uploadScreen').style.display = 'flex';
+  ALL_ROWS = [];
+  FILTER_OPTIONS = {};
+  ACTIVE_FILTERS = {};
+  fileInput.value = '';
+});
+
+function toggleTheme(){
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('dco-theme', next);
+}
+document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+document.getElementById('themeToggleUpload').addEventListener('click', toggleTheme);
+
+// ══════════════════════════════════════════════════════════════
+// STORAGE-BASED FILE LOADING
+// ══════════════════════════════════════════════════════════════
+function ensureStorageSpinner(){
+  let spinner=document.getElementById('storageSpinner');
+  if(spinner)return spinner;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  spinner=document.createElement('div');
+  spinner.id='storageSpinner';
+  spinner.innerHTML='<div class="spinner-ring"></div><div class="spinner-label">Loading data from Azure Storage...<div class="spinner-step" id="spinnerStep">Connecting...</div></div>';
+  uploadScreen.insertBefore(spinner, uploadScreen.firstElementChild ? uploadScreen.firstElementChild.nextSibling : null);
+  return spinner;
+}
+
+function setStorageSpinner(stepText){
+  const spinner=ensureStorageSpinner();
+  const stepEl=document.getElementById('spinnerStep');
+  if(stepEl&&stepText)stepEl.textContent=stepText;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      if(el.dataset.prevDisplay===undefined)el.dataset.prevDisplay=el.style.display||'';
+      el.style.display='none';
+    });
+  }
+
+  spinner.style.display='flex';
+}
+
+function hideStorageSpinner(){
+  const spinner=document.getElementById('storageSpinner');
+  if(spinner)spinner.style.display='none';
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      const prev=(el.dataset.prevDisplay!==undefined)?el.dataset.prevDisplay:'';
+      el.style.display=prev;
+      delete el.dataset.prevDisplay;
+    });
+  }
+}
+window.onFilesLoaded = function(loadedFiles) {
+  const organized = organizeLoadedFiles(loadedFiles);
+  
+  if (organized.summaryContent) {
+    const summaryFile = new File([organized.summaryContent], 'summary.csv', { type: 'text/csv' });
+    handleFile(summaryFile);
+  }
+  
+  hideFileUploadUI();
+};
+
+async function autoLoadFromStorage() {
+  const dashboardId = 'cosmos';
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+
+  if (hasConnection) {
+    setStorageSpinner('Connecting...');
+  }
+
+  const loaded = await initStorageFileLoader(dashboardId, (step) => {
+    setStorageSpinner(step || 'Loading...');
+  });
+
+  if (!loaded) {
+    hideStorageSpinner();
+    showFileUploadUI();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+</script>
+<script src="../bin/table-sort.js"></script>
+</body>
+</html>
+
+

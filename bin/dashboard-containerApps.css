@@ -1,0 +1,180 @@
+/* ── Container App Dashboard: local overrides only ── */
+#dashboardScreen { display: none; }
+.filter-btn-static { cursor: default; }
+.date-range-inline { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
+.date-input {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 6px;
+  font: inherit;
+  color-scheme: inherit;
+}
+.date-input:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+.date-input::-webkit-calendar-picker-indicator {
+  opacity: 0.9;
+  cursor: pointer;
+}
+[data-theme="dark"] .date-input::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+}
+[data-theme="light"] .date-input::-webkit-calendar-picker-indicator {
+  filter: none;
+}
+.date-sep { opacity: 0.8; font-size: 12px; }
+.kind-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 8px;
+  background: color-mix(in oklab, var(--surface), var(--accent) 8%);
+}
+.portal-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.profile-pill[data-tooltip] {
+  cursor: help;
+  position: relative;
+}
+.profile-pill[data-tooltip]::after {
+  content: attr(data-tooltip-text);
+  position: absolute;
+  top: calc(100% + 20px);
+  left: 20px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  font-size: 12px;
+  white-space: pre-line;
+  overflow-wrap: break-word;
+  max-width: 700px;
+  width: max-content;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease-out, visibility 0.15s ease-out;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  text-align: left;
+  line-height: 1.6;
+  font-family: 'JetBrains Mono', monospace;
+  margin: 0;
+}
+.profile-pill[data-tooltip]::before {
+  content: '';
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 28px;
+  border: 6px solid transparent;
+  border-bottom-color: var(--surface);
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease-out, visibility 0.15s ease-out;
+}
+.profile-pill[data-tooltip]:hover::after,
+.profile-pill[data-tooltip]:hover::before {
+  opacity: 1;
+  visibility: visible;
+}
+.portal-link:hover {
+  text-decoration: underline;
+}
+.env-portal-link {
+  margin-left: 10px;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.env-portal-link:hover {
+  text-decoration: underline;
+}
+
+/* ── Cost Advisory Section ── */
+.advisory-container {
+  background: color-mix(in oklab, var(--accent) 8%, var(--surface));
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius);
+  padding: var(--sp-lg);
+  margin: var(--sp-md) 0 var(--sp-xl);
+}
+
+.advisory-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: var(--sp-md);
+  color: var(--text);
+}
+
+.advisory-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--sp-md);
+}
+
+.advisory-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-md);
+}
+
+.advisory-card.warning {
+  border-left-color: var(--orange);
+  background: color-mix(in oklab, var(--orange) 3%, var(--surface));
+}
+
+.advisory-card.info {
+  border-left-color: var(--cyan);
+  background: color-mix(in oklab, var(--cyan) 3%, var(--surface));
+}
+
+.advisory-card.success {
+  border-left-color: var(--green);
+  background: color-mix(in oklab, var(--green) 3%, var(--surface));
+}
+
+.advisory-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-bottom: 6px;
+  color: var(--text-dim);
+}
+
+.advisory-card-body {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.advisory-empty {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: var(--sp-md);
+}
+

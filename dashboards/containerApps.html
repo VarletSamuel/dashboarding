@@ -1,0 +1,1145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Container App Environment Dashboard</title>
+<link rel="icon" type="image/png" href="../bin/delaware-dee-rgb.png">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../bin/dashboard-core.css">
+<link rel="stylesheet" href="../bin/dashboard-containerApps.css">
+<script src="../bin/storage-loader.js"></script>
+<script src="../bin/filter-bar-helper.js"></script>
+<script>
+// ── Theme: apply before paint to prevent flash ──
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+
+</head>
+<body class="ambient-glow">
+
+<!-- UPLOAD -->
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+  <h1>Container App Environment Dashboard</h1>
+  <p>Upload the files exported by <code>get_containerApps.py</code>. Drop the <strong>summary</strong> and/or <strong>timeseries</strong> CSV — one at a time or both at once.</p>
+  <div id="upload-zone" class="drop-zone" style="max-width:480px;margin:0 auto">
+    <div class="icon">📊</div>
+    <div class="label">Drop your CSV file(s) here</div>
+    <div class="hint">summary · timeseries · or both at once</div>
+  </div>
+  <input type="file" id="file-input" accept=".csv" multiple style="display:none"
+         title="Expected files: *_container_apps_summary_*.csv and/or *_container_apps_timeseries_*.csv">
+  <div id="upload-status" style="min-height:24px;margin:8px 0 2px;font-size:12px;color:var(--text-dim);text-align:center"></div>
+  <div style="margin-top:4px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+    <button class="btn btn--ghost" onclick="loadDemo()">Load Demo Data</button>
+  </div>
+</div>
+
+<!-- DASHBOARD -->
+<div id="dashboardScreen">
+  <div class="topbar">
+    <h1><img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle"><span id="dashTitle">Container App Environment Dashboard</span></h1>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+      <button class="topbar-btn" id="reloadBtn">↩ Load another CSV</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+
+  <!-- FILTER BAR -->
+  <div class="filter-bar" id="filterBar"></div>
+
+  <div class="kpi-row" id="kpis"></div>
+  <div class="advisory-container" id="advisory"></div>
+  <div class="dashboard" id="dashboard"></div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+// GLOBALS
+// ══════════════════════════════════════════════════════════════
+let SUMMARY_ROWS = [];
+let TS_ROWS      = [];
+let LOADED_FILES = { summary: null, timeseries: null };
+let AGGREGATED = null;
+let FILTER_OPTIONS = {};
+let ACTIVE_FILTERS = {};
+
+const FILTER_DEFS = [
+  { key: 'subscription',     label: 'Subscription',      icon: '📋' },
+  { key: 'environment',      label: 'Environment',       icon: '☁️' },
+  { key: 'workload_profile', label: 'Workload Profile',  icon: '⬡' },
+  { key: 'location',         label: 'Location',          icon: '📍' },
+];
+
+// ══════════════════════════════════════════════════════════════
+// CSV PARSING
+// ══════════════════════════════════════════════════════════════
+function parseCSV(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(';').map(h => h.trim());
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = lines[i].split(';');
+    const row = {};
+    headers.forEach((h, j) => { row[h] = (vals[j] || '').trim(); });
+    rows.push(row);
+  }
+  return rows;
+}
+
+// ══════════════════════════════════════════════════════════════
+// EXTRACT FILTER OPTIONS
+// ══════════════════════════════════════════════════════════════
+function extractFilterOptions(summaryRows, tsRows) {
+  const envs = new Set(), subs = new Set(), locs = new Set(), wps = new Set();
+  for (const r of (summaryRows || [])) {
+    if (r.environment_name)     envs.add(r.environment_name);
+    if (r.subscription_name)    subs.add(r.subscription_name);
+    else if (r.subscription_id) subs.add(r.subscription_id);
+    if (r.location)             locs.add(r.location);
+    if (r.app_workload_profile) wps.add(r.app_workload_profile);
+  }
+  return {
+    date_range:       getDateRangeFromRows(tsRows || []),
+    environment:      [...envs].sort(),
+    subscription:     [...subs].sort(),
+    location:         [...locs].sort(),
+    workload_profile: [...wps].sort(),
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// FILTER + RE-AGGREGATE
+// ══════════════════════════════════════════════════════════════
+function getFilteredSummaryRows() {
+  return SUMMARY_ROWS.filter(r => {
+    if (ACTIVE_FILTERS.environment?.size && !ACTIVE_FILTERS.environment.has(r.environment_name)) return false;
+    const subKey = r.subscription_name || r.subscription_id || '';
+    if (ACTIVE_FILTERS.subscription?.size && !ACTIVE_FILTERS.subscription.has(subKey)) return false;
+    if (ACTIVE_FILTERS.location?.size && !ACTIVE_FILTERS.location.has(r.location)) return false;
+    if (ACTIVE_FILTERS.workload_profile?.size && !ACTIVE_FILTERS.workload_profile.has(r.app_workload_profile)) return false;
+    return true;
+  });
+}
+
+function getFilteredTsRows(filteredResourceIds) {
+  return TS_ROWS.filter(r => {
+    if (filteredResourceIds?.size && !filteredResourceIds.has(r.resource_id || '')) return false;
+    if (ACTIVE_FILTERS.date_from || ACTIVE_FILTERS.date_to) {
+      const rowDate = timestampToDateKey(r.timestamp);
+      if (rowDate) {
+        if (ACTIVE_FILTERS.date_from && rowDate < ACTIVE_FILTERS.date_from) return false;
+        if (ACTIVE_FILTERS.date_to && rowDate > ACTIVE_FILTERS.date_to) return false;
+      }
+    }
+    return true;
+  });
+}
+
+function applyFilters() {
+  const filteredSummary = getFilteredSummaryRows();
+  const filteredResourceIds = new Set(filteredSummary.map(r => r.resource_id).filter(Boolean));
+  const filteredTs = getFilteredTsRows(filteredResourceIds);
+  AGGREGATED = aggregate(filteredSummary, filteredTs);
+  renderKPIs();
+  renderAdvisory();
+  renderDashboard();
+}
+
+// ══════════════════════════════════════════════════════════════
+// buildFilterBar, onDateFilterChange, onFilterCheck moved to bin/filter-bar-helper.js
+
+
+// onDateFilterChange moved to bin/filter-bar-helper.js
+
+// onFilterCheck moved to bin/filter-bar-helper.js
+
+// ══════════════════════════════════════════════════════════════
+// AGGREGATION
+// ══════════════════════════════════════════════════════════════
+function aggregate(summaryRows, tsRows) {
+  // Build resource_id → sparkline lookup from timeseries
+  const tsMap = new Map();
+  for (const r of (tsRows || [])) {
+    const rid = r.resource_id || '';
+    if (!rid || !r.timestamp) continue;
+    if (!tsMap.has(rid)) tsMap.set(rid, { cpu_series: [], memory_series: [], _seen: new Set() });
+    const entry = tsMap.get(rid);
+    const tsKey = String(r.timestamp);
+    if (!entry._seen.has(tsKey)) {
+      entry._seen.add(tsKey);
+      if (r.cpu_series_value !== '' && r.cpu_series_value != null)
+        entry.cpu_series.push({ timestamp: r.timestamp, value: pf(r.cpu_series_value) });
+      if (r.memory_series_value !== '' && r.memory_series_value != null)
+        entry.memory_series.push({ timestamp: r.timestamp, value: pf(r.memory_series_value) });
+    }
+  }
+
+  const envMap = new Map();
+  for (const r of (summaryRows || [])) {
+    const envKey = r.environment_name;
+    if (!envKey) continue;
+    if (!envMap.has(envKey)) {
+      envMap.set(envKey, {
+        subscription_id: r.subscription_id,
+        subscription_name: r.subscription_name,
+        resource_group: r.resource_group,
+        environment_name: r.environment_name,
+        location: r.location,
+        profiles: new Map(),
+        workloads: new Map(),
+      });
+    }
+    const env = envMap.get(envKey);
+    if (r.workload_profile_name) {
+      const wpKey = r.workload_profile_name;
+      if (!env.profiles.has(wpKey)) {
+        env.profiles.set(wpKey, {
+          name: r.workload_profile_name,
+          type: r.workload_profile_type || '',
+          current_count: r.wp_current_count || null,
+          min_count: r.wp_min_count || null,
+          max_count: r.wp_max_count || null,
+          sku_cpu_per_instance: pf(r.workload_sku_cpu_per_instance),
+          sku_memory_mib_per_instance: pf(r.workload_sku_memory_mib_per_instance),
+          capacity_cpu_total: pf(r.profile_capacity_cpu_total),
+          capacity_memory_mib_total: pf(r.profile_capacity_memory_mib_total),
+          allocated_cpu_total: pf(r.profile_allocated_cpu_total),
+          allocated_memory_mib_total: pf(r.profile_allocated_memory_mib_total),
+        });
+      } else {
+        const wp = env.profiles.get(wpKey);
+        if (wp.sku_cpu_per_instance == null) wp.sku_cpu_per_instance = pf(r.workload_sku_cpu_per_instance);
+        if (wp.sku_memory_mib_per_instance == null) wp.sku_memory_mib_per_instance = pf(r.workload_sku_memory_mib_per_instance);
+        if (wp.capacity_cpu_total == null) wp.capacity_cpu_total = pf(r.profile_capacity_cpu_total);
+        if (wp.capacity_memory_mib_total == null) wp.capacity_memory_mib_total = pf(r.profile_capacity_memory_mib_total);
+        if (wp.allocated_cpu_total == null) wp.allocated_cpu_total = pf(r.profile_allocated_cpu_total);
+        if (wp.allocated_memory_mib_total == null) wp.allocated_memory_mib_total = pf(r.profile_allocated_memory_mib_total);
+      }
+    }
+    if (r.app_name) {
+      const workloadKind = (r.workload_kind || 'app').toLowerCase();
+      const appKey = `${workloadKind}|${r.app_name}`;
+      const rid = r.resource_id || '';
+      const tsEntry = tsMap.get(rid) || { cpu_series: [], memory_series: [] };
+
+      if (!env.workloads.has(appKey)) {
+        env.workloads.set(appKey, {
+          name: r.app_name,
+          workload_kind: workloadKind,
+          workload_profile: r.app_workload_profile || '',
+          replicas_avg: null,
+          cpu_request: null,
+          memory_request_mib: null,
+          cpu_avg_cores: null,
+          memory_avg_mib: null,
+          cpu_utilisation_pct: null,
+          memory_utilisation_pct: null,
+          cpu_series: tsEntry.cpu_series,
+          memory_series: tsEntry.memory_series,
+          containers: new Map(),
+        });
+      }
+      const app = env.workloads.get(appKey);
+
+      const containerName = r.container_name || r.app_name;
+      const isSidecar = r.is_sidecar === '1' || r.is_sidecar === 1 || r.is_sidecar === true;
+      const containerKey = `${isSidecar ? 's' : 'm'}|${containerName}`;
+      if (!app.containers.has(containerKey)) {
+        app.containers.set(containerKey, {
+          name: containerName,
+          is_sidecar: isSidecar,
+          cpu_request: pf(r.cpu_request),
+          memory_request_mib: pf(r.memory_request_mib),
+          cpu_avg_cores: pf(r.cpu_avg_cores),
+          memory_avg_mib: pf(r.memory_avg_mib),
+          cpu_utilisation_pct: pf(r.cpu_utilisation_pct),
+          memory_utilisation_pct: pf(r.memory_utilisation_pct),
+        });
+      } else {
+        const c = app.containers.get(containerKey);
+        if (c.cpu_request == null) c.cpu_request = pf(r.cpu_request);
+        if (c.memory_request_mib == null) c.memory_request_mib = pf(r.memory_request_mib);
+        if (c.cpu_avg_cores == null) c.cpu_avg_cores = pf(r.cpu_avg_cores);
+        if (c.memory_avg_mib == null) c.memory_avg_mib = pf(r.memory_avg_mib);
+        if (c.cpu_utilisation_pct == null) c.cpu_utilisation_pct = pf(r.cpu_utilisation_pct);
+        if (c.memory_utilisation_pct == null) c.memory_utilisation_pct = pf(r.memory_utilisation_pct);
+      }
+
+      // App-level values come from main container row where available
+      if (!isSidecar || app.cpu_request == null) {
+        app.replicas_avg = pf(r.replicas_avg);
+        app.cpu_request = pf(r.cpu_request);
+        app.memory_request_mib = pf(r.memory_request_mib);
+        app.cpu_avg_cores = pf(r.cpu_avg_cores);
+        app.memory_avg_mib = pf(r.memory_avg_mib);
+        app.cpu_utilisation_pct = pf(r.cpu_utilisation_pct);
+        app.memory_utilisation_pct = pf(r.memory_utilisation_pct);
+      }
+    }
+  }
+  const environments = [];
+  for (const env of envMap.values()) {
+    const appAllocByProfile = new Map();
+    for (const app of env.workloads.values()) {
+      const profileName = app.workload_profile || '';
+      if (!profileName) continue;
+      const replicas = app.replicas_avg != null ? app.replicas_avg : 1;
+      let cpu = 0;
+      let mem = 0;
+      for (const c of app.containers.values()) {
+        if (c.cpu_request != null) cpu += c.cpu_request * replicas;
+        if (c.memory_request_mib != null) mem += c.memory_request_mib * replicas;
+      }
+      const cur = appAllocByProfile.get(profileName) || { cpu: 0, mem: 0 };
+      cur.cpu += cpu;
+      cur.mem += mem;
+      appAllocByProfile.set(profileName, cur);
+    }
+
+    for (const wp of env.profiles.values()) {
+      const sku = getSkuCapacity(wp.type);
+      if (wp.sku_cpu_per_instance == null && sku) wp.sku_cpu_per_instance = sku.cpu;
+      if (wp.sku_memory_mib_per_instance == null && sku) wp.sku_memory_mib_per_instance = sku.memMib;
+
+      const count = pf(wp.current_count);
+      if (wp.capacity_cpu_total == null && count != null && wp.sku_cpu_per_instance != null) {
+        wp.capacity_cpu_total = count * wp.sku_cpu_per_instance;
+      }
+      if (wp.capacity_memory_mib_total == null && count != null && wp.sku_memory_mib_per_instance != null) {
+        wp.capacity_memory_mib_total = count * wp.sku_memory_mib_per_instance;
+      }
+
+      const alloc = appAllocByProfile.get(wp.name);
+      if (wp.allocated_cpu_total == null && alloc) wp.allocated_cpu_total = alloc.cpu;
+      if (wp.allocated_memory_mib_total == null && alloc) wp.allocated_memory_mib_total = alloc.mem;
+    }
+
+    const apps = Array.from(env.workloads.values()).map(app => {
+      const containers = Array.from(app.containers.values()).sort((a, b) => {
+        if (a.is_sidecar === b.is_sidecar) return a.name.localeCompare(b.name);
+        return a.is_sidecar ? 1 : -1;
+      });
+      return { ...app, containers };
+    });
+    environments.push({
+      ...env,
+      workload_profiles: Array.from(env.profiles.values()),
+      container_apps: apps,
+    });
+  }
+  return { environments };
+}
+
+function pf(v) {
+  if (v === '' || v === undefined || v === null) return null;
+  const n = parseFloat(v);
+  return isNaN(n) ? null : n;
+}
+
+function getSkuCapacity(profileType) {
+  const key = String(profileType || '').trim().toUpperCase();
+  const map = {
+    D4:  { cpu: 4,  memMib: 16384 },
+    D8:  { cpu: 8,  memMib: 32768 },
+    D16: { cpu: 16, memMib: 65536 },
+    D32: { cpu: 32, memMib: 131072 },
+    E4:  { cpu: 4,  memMib: 32768 },
+    E8:  { cpu: 8,  memMib: 65536 },
+    E16: { cpu: 16, memMib: 131072 },
+    E32: { cpu: 32, memMib: 262144 },
+  };
+  return map[key] || null;
+}
+
+function fmtNum(v, digits = 2) {
+  return v != null && Number.isFinite(v) ? Number(v).toFixed(digits) : '—';
+}
+
+function fmtMemMibAsGiB(v) {
+  return v != null && Number.isFinite(v) ? (Number(v) / 1024).toFixed(2) : '—';
+}
+
+function buildProfileTooltip(profile) {
+  if (!profile) return '';
+  const inst = pf(profile.current_count);
+  const skuCpu = pf(profile.sku_cpu_per_instance);
+  const skuMem = pf(profile.sku_memory_mib_per_instance);
+  const capCpu = pf(profile.capacity_cpu_total);
+  const capMem = pf(profile.capacity_memory_mib_total);
+  const allocCpu = pf(profile.allocated_cpu_total);
+  const allocMem = pf(profile.allocated_memory_mib_total);
+
+  const isConsumption = (profile.type || '').toLowerCase() === 'consumption' || 
+                        (profile.name || '').toLowerCase() === 'consumption';
+
+  if (isConsumption) {
+    // Consumption profiles auto-scale; show allocation only
+    return [
+      `Profile: ${profile.name || 'Consumption'} (auto-scaling)`,
+      allocCpu != null || allocMem != null 
+        ? `Currently allocated: ${fmtNum(allocCpu, 2)} vCPU · ${fmtMemMibAsGiB(allocMem)} GiB`
+        : `(no workload allocations tracked)`,
+    ].join('\n');
+  }
+
+  // Dedicated profiles: show full SKU capacity and allocation
+  const cpuPct = (capCpu && allocCpu != null) ? (allocCpu / capCpu) * 100 : null;
+  const memPct = (capMem && allocMem != null) ? (allocMem / capMem) * 100 : null;
+
+  return [
+    `SKU ${profile.type || profile.name || 'n/a'}${inst != null ? ` · ${fmtNum(inst, 0)} instance(s)` : ''}`,
+    `Per instance: ${fmtNum(skuCpu, 2)} vCPU · ${fmtMemMibAsGiB(skuMem)} GiB`,
+    `Total profile capacity: ${fmtNum(capCpu, 2)} vCPU · ${fmtMemMibAsGiB(capMem)} GiB`,
+    `Currently allocated by workloads: ${fmtNum(allocCpu, 2)} vCPU (${fmtPct(cpuPct)}) · ${fmtMemMibAsGiB(allocMem)} GiB (${fmtPct(memPct)})`,
+  ].join('\n');
+}
+
+function timestampToDateKey(timestamp) {
+  if (!timestamp) return '';
+  const ms = Date.parse(timestamp);
+  if (Number.isNaN(ms)) return '';
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function getDateRangeFromRows(rows) {
+  let minMs = null;
+  let maxMs = null;
+  for (const r of rows) {
+    const ms = Date.parse(r.timestamp || '');
+    if (Number.isNaN(ms)) continue;
+    if (minMs == null || ms < minMs) minMs = ms;
+    if (maxMs == null || ms > maxMs) maxMs = ms;
+  }
+  if (minMs == null || maxMs == null) return null;
+  return {
+    min: new Date(minMs).toISOString().slice(0, 10),
+    max: new Date(maxMs).toISOString().slice(0, 10),
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// UTILITY
+// ══════════════════════════════════════════════════════════════
+function utilizationClass(pct) {
+  if (pct == null) return 'na';
+  if (pct < 60) return 'low';
+  if (pct < 85) return 'mid';
+  return 'high';
+}
+function fmtPct(v) { return v != null ? v.toFixed(1) + '%' : '—'; }
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+function buildAzurePortalResourceLink(env, app) {
+  const subscriptionId = (env?.subscription_id || '').trim();
+  const resourceGroup = (env?.resource_group || '').trim();
+  const appName = (app?.name || '').trim();
+  if (!subscriptionId || !resourceGroup || !appName) return '';
+
+  const resourceType = (app?.workload_kind || 'app').toLowerCase() === 'job'
+    ? 'jobs'
+    : 'containerApps';
+
+  const resourceId = `/subscriptions/${encodeURIComponent(subscriptionId)}/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.App/${resourceType}/${encodeURIComponent(appName)}`;
+  return `https://portal.azure.com/#resource${resourceId}/overview`;
+}
+
+function buildAzurePortalEnvironmentLink(env) {
+  const subscriptionId = (env?.subscription_id || '').trim();
+  const resourceGroup = (env?.resource_group || '').trim();
+  const environmentName = (env?.environment_name || '').trim();
+  if (!subscriptionId || !resourceGroup || !environmentName) return '';
+
+  const resourceId = `/subscriptions/${encodeURIComponent(subscriptionId)}/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.App/managedEnvironments/${encodeURIComponent(environmentName)}`;
+  return `https://portal.azure.com/#resource${resourceId}/overview`;
+}
+
+function sparkSVG(series, color) {
+  const vals = (series || []).map(p => p.value).filter(v => v != null);
+  if (vals.length < 2) return '<svg viewBox="0 0 100 36"></svg>';
+  const max = Math.max(...vals) || 1;
+  const min = Math.min(...vals);
+  const range = max - min || 1;
+  const w = 100, h = 36, pad = 2;
+  const points = vals.map((v, i) => {
+    const x = (i / (vals.length - 1)) * w;
+    const y = pad + ((1 - (v - min) / range) * (h - pad * 2));
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const polyline = points.join(' ');
+  const areaPoints = `0,${h} ${polyline} ${w},${h}`;
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <polygon points="${areaPoints}" fill="${color}" opacity="0.12"/>
+    <polyline points="${polyline}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// KPIs  (recalculated based on visible apps)
+// ══════════════════════════════════════════════════════════════
+function getVisibleApps() {
+  if (!AGGREGATED || !AGGREGATED.environments.length) return [];
+  return AGGREGATED.environments.flatMap(env => {
+    const activeProfiles = ENV_PROFILE_STATE[env.environment_name];
+    if (!activeProfiles) return env.container_apps;
+    return env.container_apps.filter(app => activeProfiles.has(app.workload_profile));
+  });
+}
+
+function renderKPIs() {
+  const el = document.getElementById('kpis');
+  if (!AGGREGATED || !AGGREGATED.environments.length) {
+    el.innerHTML = '<div class="kpi"><div class="label">No data</div><div class="value">—</div></div>';
+    return;
+  }
+  const envs = AGGREGATED.environments;
+  const totalProfiles = envs.reduce((s, e) => s + e.workload_profiles.length, 0);
+  const visibleApps = getVisibleApps();
+  const totalApps = visibleApps.filter(a => (a.workload_kind || 'app') === 'app').length;
+  const totalJobs = visibleApps.filter(a => a.workload_kind === 'job').length;
+  const totalWorkloads = visibleApps.length;
+  const cpuApps = visibleApps.filter(a => a.cpu_utilisation_pct != null);
+  const memApps = visibleApps.filter(a => a.memory_utilisation_pct != null);
+  const cpuAvg = cpuApps.length ? (cpuApps.reduce((s, a) => s + a.cpu_utilisation_pct, 0) / cpuApps.length) : null;
+  const memAvg = memApps.length ? (memApps.reduce((s, a) => s + a.memory_utilisation_pct, 0) / memApps.length) : null;
+
+  el.innerHTML = `
+    <div class="kpi"><div class="label">Environments</div><div class="value">${envs.length}</div></div>
+    <div class="kpi"><div class="label">Workload Profiles</div><div class="value">${totalProfiles}</div></div>
+    <div class="kpi"><div class="label">Workloads</div><div class="value">${totalWorkloads}</div></div>
+    <div class="kpi"><div class="label">Apps / Jobs</div><div class="value">${totalApps} / ${totalJobs}</div></div>
+    <div class="kpi"><div class="label">Avg CPU Util.</div><div class="value u-${utilizationClass(cpuAvg)}">${fmtPct(cpuAvg)}</div></div>
+    <div class="kpi"><div class="label">Avg Memory Util.</div><div class="value u-${utilizationClass(memAvg)}">${fmtPct(memAvg)}</div></div>`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// COST ADVISORY ANALYSIS
+// ══════════════════════════════════════════════════════════════
+function generateCostAdvisories() {
+  if (!AGGREGATED || !AGGREGATED.environments.length) return [];
+
+  const advisories = [];
+  const visibleApps = getVisibleApps();
+
+  // 1. Underutilized workloads (low CPU utilization)
+  const underutilized = visibleApps.filter(a => a.cpu_utilisation_pct != null && a.cpu_utilisation_pct < 20);
+  if (underutilized.length > 0) {
+    const names = underutilized.slice(0, 3).map(a => a.name).join(', ');
+    const more = underutilized.length > 3 ? ` (+${underutilized.length - 3} more)` : '';
+    advisories.push({
+      type: 'warning',
+      icon: '⚠️',
+      title: 'Low CPU Utilization',
+      body: `${underutilized.length} workload${underutilized.length > 1 ? 's' : ''} running below 20% CPU. Consider rightsizing or consolidating. ${names}${more}`,
+    });
+  }
+
+  // 2. High memory request vs low utilization
+  const memoryWaste = visibleApps.filter(a =>
+    a.memory_request_mib != null && a.memory_request_mib > 512 &&
+    a.memory_utilisation_pct != null && a.memory_utilisation_pct < 30
+  );
+  if (memoryWaste.length > 0) {
+    advisories.push({
+      type: 'warning',
+      icon: '💾',
+      title: 'Memory Over-Provisioning',
+      body: `${memoryWaste.length} workload${memoryWaste.length > 1 ? 's' : ''} have high memory requests (>512 MiB) but <30% utilization. Reduce memory allocations to save costs.`,
+    });
+  }
+
+  // 3. High replica count with low utilization
+  const overReplicated = visibleApps.filter(a =>
+    a.replicas_avg != null && a.replicas_avg >= 3 &&
+    a.cpu_utilisation_pct != null && a.cpu_utilisation_pct < 30
+  );
+  if (overReplicated.length > 0) {
+    advisories.push({
+      type: 'warning',
+      icon: '📦',
+      title: 'Over-Replicated Workloads',
+      body: `${overReplicated.length} workload${overReplicated.length > 1 ? 's' : ''} with ≥3 replicas but <30% CPU utilization. Consider reducing replica minimums.`,
+    });
+  }
+
+  // 4. Workload profile utilization summary
+  const profiles = new Set();
+  let premiumLowUtil = 0;
+  for (const app of visibleApps) {
+    if (app.workload_profile && app.workload_profile !== 'Consumption') {
+      profiles.add(app.workload_profile);
+      if (app.cpu_utilisation_pct != null && app.cpu_utilisation_pct < 25) {
+        premiumLowUtil++;
+      }
+    }
+  }
+  if (premiumLowUtil > 0 && profiles.size > 0) {
+    advisories.push({
+      type: 'info',
+      icon: '⚡',
+      title: 'Premium Profile Optimization',
+      body: `${premiumLowUtil} workload${premiumLowUtil > 1 ? 's' : ''} on dedicated profiles (${Array.from(profiles).join(', ')}) show low utilization. Evaluate moving to Consumption or smaller dedicated profiles.`,
+    });
+  }
+
+  // 5. Overall efficiency check
+  const withUtilData = visibleApps.filter(a => a.cpu_utilisation_pct != null);
+  if (withUtilData.length > 0) {
+    const avgCPU = withUtilData.reduce((s, a) => s + a.cpu_utilisation_pct, 0) / withUtilData.length;
+    if (avgCPU > 70) {
+      advisories.push({
+        type: 'success',
+        icon: '✅',
+        title: 'Good Resource Utilization',
+        body: `Average CPU utilization is ${Math.round(avgCPU)}% across workloads. Capacity is being used efficiently.`,
+      });
+    }
+  }
+
+  return advisories;
+}
+
+function renderAdvisory() {
+  const el = document.getElementById('advisory');
+  if (!AGGREGATED || !AGGREGATED.environments.length) {
+    el.innerHTML = '';
+    return;
+  }
+
+  const advisories = generateCostAdvisories();
+  if (!advisories.length) {
+    el.innerHTML = '<div class="advisory-empty">💡 No cost optimizations identified. Your workload allocation looks healthy.</div>';
+    return;
+  }
+
+  let html = '<div class="advisory-title">💡 Cost Optimization Insights</div><div class="advisory-grid">';
+  for (const adv of advisories) {
+    html += `
+      <div class="advisory-card ${adv.type}">
+        <div class="advisory-card-title">${adv.icon} ${adv.title}</div>
+        <div class="advisory-card-body">${adv.body}</div>
+      </div>`;
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+// ══════════════════════════════════════════════════════════════
+// PROFILE TOGGLE STATE  (per environment)
+// ══════════════════════════════════════════════════════════════
+// { "env-name": Set of active profile names }
+let ENV_PROFILE_STATE = {};
+
+function initProfileState() {
+  ENV_PROFILE_STATE = {};
+  if (!AGGREGATED) return;
+  for (const env of AGGREGATED.environments) {
+    // Collect all unique profile names that workloads actually reference
+    const profileNames = new Set();
+    for (const wp of env.workload_profiles) profileNames.add(wp.name);
+    // Also include "Consumption" if any workload uses it but it's not in workload_profiles
+    for (const app of env.container_apps) {
+      if (app.workload_profile) profileNames.add(app.workload_profile);
+    }
+    ENV_PROFILE_STATE[env.environment_name] = new Set(profileNames); // all active by default
+  }
+}
+
+function toggleProfile(envName, profileName) {
+  const state = ENV_PROFILE_STATE[envName];
+  if (!state) return;
+
+  if (state.has(profileName)) {
+    state.delete(profileName);
+  } else {
+    state.add(profileName);
+  }
+
+  // Update pill visual
+  const envEl = document.querySelector(`.env-section[data-env="${CSS.escape(envName)}"]`);
+  if (!envEl) return;
+
+  envEl.querySelectorAll('.profile-pill.interactive').forEach(pill => {
+    const pName = pill.dataset.profile;
+    pill.classList.toggle('inactive', !state.has(pName));
+  });
+
+  // Toggle app card visibility
+  envEl.querySelectorAll('.app-card[data-profile]').forEach(card => {
+    card.classList.toggle('profile-hidden', !state.has(card.dataset.profile));
+  });
+
+  // Recalculate KPIs
+  renderKPIs();
+  renderAdvisory();
+}
+
+// ══════════════════════════════════════════════════════════════
+// COLLAPSIBLE ENV SECTIONS
+// ══════════════════════════════════════════════════════════════
+function toggleEnvSection(headerEl) {
+  const section = headerEl.closest('.env-section');
+  section.classList.toggle('collapsed');
+}
+
+// ══════════════════════════════════════════════════════════════
+// DASHBOARD CONTENT
+// ══════════════════════════════════════════════════════════════
+function renderDashboard() {
+  const container = document.getElementById('dashboard');
+  if (!AGGREGATED || !AGGREGATED.environments.length) {
+    container.innerHTML = '<div class="row row-full"><div class="card" style="text-align:center;padding:48px"><div class="no-metrics">No data matches the current filters.</div></div></div>';
+    return;
+  }
+  initProfileState();
+  const envs = AGGREGATED.environments;
+  let html = '';
+
+  envs.forEach((env, idx) => {
+    const activeProfiles = ENV_PROFILE_STATE[env.environment_name] || new Set();
+    const envPortalLink = buildAzurePortalEnvironmentLink(env);
+
+    // Build the set of profile names to show as pills
+    // Merge workload_profiles with any app_workload_profile values (catches "Consumption" workloads)
+    const pillMap = new Map();
+    for (const wp of env.workload_profiles) {
+      pillMap.set(wp.name, { ...wp });
+    }
+    for (const app of env.container_apps) {
+      if (app.workload_profile && !pillMap.has(app.workload_profile)) {
+        pillMap.set(app.workload_profile, {
+          name: app.workload_profile,
+          type: app.workload_profile,
+          current_count: null,
+          sku_cpu_per_instance: null,
+          sku_memory_mib_per_instance: null,
+          capacity_cpu_total: null,
+          capacity_memory_mib_total: null,
+          allocated_cpu_total: null,
+          allocated_memory_mib_total: null,
+        });
+      }
+    }
+    // Count workloads per profile
+    const appCountPerProfile = {};
+    for (const app of env.container_apps) {
+      const p = app.workload_profile || '';
+      appCountPerProfile[p] = (appCountPerProfile[p] || 0) + 1;
+    }
+
+    html += `<div class="env-section" data-env="${esc(env.environment_name)}" style="animation-delay:${idx * 0.07}s">`;
+    html += `<div class="env-header" onclick="toggleEnvSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>${esc(env.environment_name)}</h2>
+      <span class="env-summary">${env.container_apps.length} workload${env.container_apps.length !== 1 ? 's' : ''} · ${pillMap.size} profile${pillMap.size !== 1 ? 's' : ''}</span>
+      <span class="env-loc">${esc(env.location || '')} · ${esc(env.resource_group)} · ${esc(env.subscription_name || env.subscription_id || '')}</span>
+      ${envPortalLink ? `<a class="env-portal-link" href="${envPortalLink}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">↗ Environment in Azure Portal</a>` : ''}
+    </div>`;
+    html += '<div class="env-body">';
+
+    if (pillMap.size) {
+      html += '<div class="profiles-row">';
+      for (const [pName, wp] of pillMap) {
+        const isActive = activeProfiles.has(pName);
+        const appCount = appCountPerProfile[pName] || 0;
+        const tooltip = buildProfileTooltip(wp);
+        html += `<div class="profile-pill interactive${isActive ? '' : ' inactive'}" data-profile="${esc(pName)}" data-env="${esc(env.environment_name)}" data-tooltip="1" data-tooltip-text="${esc(tooltip)}" onclick="toggleProfile('${esc(env.environment_name).replace(/'/g, "\\'")}', '${esc(pName).replace(/'/g, "\\'")}')">
+          <span class="dot"></span>
+          <strong>${esc(wp.name)}</strong>
+          <span class="pill-type">${esc(wp.type)}</span>
+          ${wp.current_count != null ? `<span class="pill-count">${wp.current_count} inst</span>` : ''}
+          <span class="pill-apps">${appCount} workload${appCount !== 1 ? 's' : ''}</span>
+        </div>`;
+      }
+      html += '</div>';
+    }
+
+    if (env.container_apps.length) {
+      html += '<div class="apps-grid">';
+      env.container_apps.forEach(app => {
+        const cpuCls = utilizationClass(app.cpu_utilisation_pct);
+        const memCls = utilizationClass(app.memory_utilisation_pct);
+        const cpuW = app.cpu_utilisation_pct != null ? Math.min(app.cpu_utilisation_pct, 100) : 0;
+        const memW = app.memory_utilisation_pct != null ? Math.min(app.memory_utilisation_pct, 100) : 0;
+        const isHidden = !activeProfiles.has(app.workload_profile);
+        const portalLink = buildAzurePortalResourceLink(env, app);
+
+        html += `<div class="app-card${isHidden ? ' profile-hidden' : ''}" data-profile="${esc(app.workload_profile)}">
+          <div class="app-name" title="${esc(app.name)}">${esc(app.name)}</div>
+          <div class="app-meta">
+            <span class="kind-chip">${(app.workload_kind || 'app') === 'job' ? 'Job' : 'App'}</span>
+            ${app.workload_profile ? `<span>⬡ ${esc(app.workload_profile)}</span>` : ''}
+            ${app.replicas_avg != null ? `<span>⊞ ${app.replicas_avg} replicas</span>` : ''}
+            ${app.cpu_request != null ? `<span class="mono">${app.cpu_request} vCPU</span>` : ''}
+            ${app.memory_request_mib != null ? `<span class="mono">${app.memory_request_mib} MiB</span>` : ''}
+            ${app.containers && app.containers.length > 1 ? `<span style="color:var(--accent)">📦 ${app.containers.filter(c => !c.is_sidecar).length} main + ${app.containers.filter(c => c.is_sidecar).length} sidecar${app.containers.filter(c => c.is_sidecar).length !== 1 ? 's' : ''}</span>` : ''}
+          </div>
+          ${app.containers && app.containers.some(c => c.is_sidecar) ? `<div style="margin:8px 0 10px 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px;">
+            ${app.containers.filter(c => c.is_sidecar).map(c => `<div style="border:1px solid var(--border);border-radius:10px;padding:8px;background:color-mix(in oklab, var(--surface), var(--accent) 6%);">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;">
+                <strong style="font-size:12px;">🔗 ${esc(c.name)}</strong>
+                <span style="font-size:10px;opacity:.8;">Sidecar</span>
+              </div>
+              <div style="display:flex;gap:10px;font-size:11px;flex-wrap:wrap;">
+                <span><strong>CPU alloc:</strong> ${c.cpu_request != null ? `${c.cpu_request} vCPU` : '—'}</span>
+                <span><strong>MEM alloc:</strong> ${c.memory_request_mib != null ? `${c.memory_request_mib} MiB` : '—'}</span>
+              </div>
+              ${portalLink ? `<a style="display:inline-block;margin-top:6px;font-size:11px;color:var(--accent);text-decoration:none;" href="${portalLink}" target="_blank" rel="noopener noreferrer">↗ Linked app: ${esc(app.name)}</a>` : ''}
+            </div>`).join('')}
+          </div>` : ''}
+          <div class="gauge-row">
+            <div class="gauge-label">CPU</div>
+            <div class="gauge-track"><div class="gauge-fill fill-${cpuCls}" style="width:${cpuW}%"></div></div>
+            <div class="gauge-pct u-${cpuCls}">${fmtPct(app.cpu_utilisation_pct)}</div>
+          </div>
+          <div class="gauge-row">
+            <div class="gauge-label">MEM</div>
+            <div class="gauge-track"><div class="gauge-fill fill-${memCls}" style="width:${memW}%"></div></div>
+            <div class="gauge-pct u-${memCls}">${fmtPct(app.memory_utilisation_pct)}</div>
+          </div>
+          ${portalLink ? `<a class="portal-link" href="${portalLink}" target="_blank" rel="noopener noreferrer">↗ Open in Azure Portal</a>` : ''}
+          <div class="sparkline-area">
+            <div class="spark-box">
+              <div class="spark-title">CPU (cores)</div>
+              ${sparkSVG(app.cpu_series, '#34d399')}
+            </div>
+            <div class="spark-box">
+              <div class="spark-title">Memory (MiB)</div>
+              ${sparkSVG(app.memory_series, '#0078d4')}
+            </div>
+          </div>
+        </div>`;
+      });
+      html += '</div>';
+    } else {
+      html += '<div class="no-metrics">No workloads found in this environment.</div>';
+    }
+
+    html += '</div></div>';
+  });
+
+  container.innerHTML = html;
+}
+
+// ══════════════════════════════════════════════════════════════
+// SHOW DASHBOARD
+// ══════════════════════════════════════════════════════════════
+function showDashboard() {
+  document.getElementById('uploadScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'block';
+
+  // Derive customer from loaded filenames
+  let customer = '';
+  const fname = LOADED_FILES.summary || LOADED_FILES.timeseries || '';
+  if (fname) {
+    const m = fname.match(/^([A-Za-z0-9]+)_container_apps/i);
+    if (m) customer = m[1].toUpperCase();
+  }
+  document.getElementById('dashTitle').textContent = (customer ? customer + ' — ' : '') + 'Container App Environment Dashboard';
+
+  const parts = [];
+  if (LOADED_FILES.summary)    parts.push('✓ summary');
+  if (LOADED_FILES.timeseries) parts.push('✓ timeseries');
+  const dateRange = FILTER_OPTIONS.date_range;
+  if (dateRange?.min && dateRange?.max) parts.push(`${dateRange.min} → ${dateRange.max}`);
+  document.getElementById('dashMeta').textContent = parts.join('  ·  ');
+
+  buildFilterBar();
+  renderKPIs();
+  renderAdvisory();
+  renderDashboard();
+}
+
+// ══════════════════════════════════════════════════════════════
+// FILE HANDLING
+// ══════════════════════════════════════════════════════════════
+function isSummaryFile(name)    { return /container_apps_summary/i.test(name); }
+function isTimeseriesFile(name) { return /container_apps_timeseries/i.test(name); }
+function isLegacyFile(name)     { return /container_apps/i.test(name) && !isSummaryFile(name) && !isTimeseriesFile(name); }
+
+function updateUploadStatus() {
+  const statusEl = document.getElementById('upload-status');
+  const hintEl   = zone.querySelector('.hint');
+  const msgs = [];
+  if (LOADED_FILES.summary)    msgs.push(`✅ Summary: ${LOADED_FILES.summary}`);
+  if (LOADED_FILES.timeseries) msgs.push(`✅ Timeseries: ${LOADED_FILES.timeseries}`);
+  if (statusEl) statusEl.textContent = msgs.join('  ');
+  if (LOADED_FILES.summary && LOADED_FILES.timeseries) {
+    zone.style.borderColor = 'var(--accent)';
+    if (hintEl) hintEl.textContent = 'Both files loaded ✓';
+  } else if (LOADED_FILES.summary || LOADED_FILES.timeseries) {
+    zone.style.borderColor = 'var(--accent-dim, #6c9)';
+    if (hintEl) hintEl.textContent = 'Drop the other file to complete';
+  } else {
+    zone.style.borderColor = '';
+    if (hintEl) hintEl.textContent = 'summary · timeseries · or both at once';
+  }
+}
+
+function tryShowDashboard() {
+  if (!SUMMARY_ROWS.length && !TS_ROWS.length) return;
+  FILTER_OPTIONS = extractFilterOptions(SUMMARY_ROWS, TS_ROWS);
+  ACTIVE_FILTERS = {
+    date_from: FILTER_OPTIONS.date_range?.min || '',
+    date_to:   FILTER_OPTIONS.date_range?.max || '',
+    environment:      new Set(),
+    subscription:     new Set(),
+    location:         new Set(),
+    workload_profile: new Set(),
+  };
+  const filteredResourceIds = new Set(SUMMARY_ROWS.map(r => r.resource_id).filter(Boolean));
+  AGGREGATED = aggregate(SUMMARY_ROWS, getFilteredTsRows(filteredResourceIds));
+  showDashboard();
+}
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const rows = parseCSV(e.target.result);
+      if (!rows.length) { alert('No data rows found in CSV.'); return; }
+      const name = file.name;
+      if (isSummaryFile(name)) {
+        SUMMARY_ROWS = rows;
+        LOADED_FILES.summary = name;
+      } else if (isTimeseriesFile(name)) {
+        TS_ROWS = rows;
+        LOADED_FILES.timeseries = name;
+      } else if (isLegacyFile(name)) {
+        // Legacy single-file: use for both slots
+        SUMMARY_ROWS = rows;
+        TS_ROWS = rows;
+        LOADED_FILES.summary = name;
+        LOADED_FILES.timeseries = name;
+      } else {
+        // Fallback: sniff from columns
+        if (rows[0] && 'cpu_series_value' in rows[0] && !('cpu_avg_cores' in rows[0])) {
+          TS_ROWS = rows;
+          LOADED_FILES.timeseries = name;
+        } else {
+          SUMMARY_ROWS = rows;
+          LOADED_FILES.summary = name;
+        }
+      }
+      updateUploadStatus();
+      tryShowDashboard();
+    } catch (err) {
+      alert('Error parsing CSV: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+const zone = document.getElementById('upload-zone');
+const fileInput = document.getElementById('file-input');
+zone.addEventListener('click', () => fileInput.click());
+zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  zone.classList.remove('dragover');
+  for (const f of e.dataTransfer.files) handleFile(f);
+});
+fileInput.addEventListener('change', e => {
+  const files = [...e.target.files].filter(f => {
+    if (!/container_apps/i.test(f.name))
+      return confirm(`"${f.name}" doesn't look like a Container Apps export.\nExpected a filename containing "container_apps".\n\nLoad it anyway?`);
+    return true;
+  });
+  files.forEach(f => handleFile(f));
+  fileInput.value = '';
+});
+
+document.getElementById('reloadBtn').addEventListener('click', () => {
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('uploadScreen').style.display = 'flex';
+  SUMMARY_ROWS = [];
+  TS_ROWS = [];
+  LOADED_FILES = { summary: null, timeseries: null };
+  AGGREGATED = null;
+  FILTER_OPTIONS = {};
+  ACTIVE_FILTERS = {};
+  fileInput.value = '';
+  zone.style.borderColor = '';
+  const hintEl = zone.querySelector('.hint');
+  if (hintEl) hintEl.textContent = 'summary · timeseries · or both at once';
+  const statusEl = document.getElementById('upload-status');
+  if (statusEl) statusEl.textContent = '';
+});
+
+// ══════════════════════════════════════════════════════════════
+// DEMO DATA
+// ══════════════════════════════════════════════════════════════
+function loadDemo() {
+  const now = Date.now();
+  const tenantId = 'demo-tenant';
+  const subId = 'a1b2c3d4-0000-1111-2222-333344445555';
+
+  function ts(i, count) { return new Date(now - (count - i) * 5 * 60000).toISOString().replace(/\.\d+Z/, 'Z'); }
+  function rnd(base, v) { return Math.max(0, base + (Math.random() - 0.5) * v * 2).toFixed(4); }
+
+  const apps = [
+    { env:'cae-prod-weu',     rg:'rg-prod-westeurope',   loc:'westeurope',  sub:'prod-subscription',    wp:'dedicated-d4', wt:'D4',          wc:3,  rid:'rid-001', name:'api-gateway',          rep:3, cpuR:1.0,  memR:2048, cpuA:0.72, memA:1480, cpuP:72.0, memP:72.3, sidecars:[] },
+    { env:'cae-prod-weu',     rg:'rg-prod-westeurope',   loc:'westeurope',  sub:'prod-subscription',    wp:'dedicated-d4', wt:'D4',          wc:3,  rid:'rid-002', name:'order-service',        rep:2, cpuR:0.5,  memR:1024, cpuA:0.41, memA:820,  cpuP:82.0, memP:80.1, sidecars:[] },
+    { env:'cae-prod-weu',     rg:'rg-prod-westeurope',   loc:'westeurope',  sub:'prod-subscription',    wp:'dedicated-e8', wt:'E8',          wc:2,  rid:'rid-003', name:'payment-processor',    rep:2, cpuR:2.0,  memR:4096, cpuA:1.78, memA:3700, cpuP:89.0, memP:90.3, sidecars:['sidecar-tracing'] },
+    { env:'cae-prod-weu',     rg:'rg-prod-westeurope',   loc:'westeurope',  sub:'prod-subscription',    wp:'Consumption',  wt:'Consumption', wc:'', rid:'rid-004', name:'notification-worker',  rep:1, cpuR:0.25, memR:512,  cpuA:0.05, memA:110,  cpuP:20.0, memP:21.5, sidecars:[] },
+    { env:'cae-staging-weu',  rg:'rg-staging-westeurope',loc:'westeurope',  sub:'staging-subscription', wp:'Consumption',  wt:'Consumption', wc:'', rid:'rid-005', name:'api-gateway-staging',  rep:1, cpuR:0.5,  memR:1024, cpuA:0.08, memA:220,  cpuP:16.0, memP:21.5, sidecars:[] },
+    { env:'cae-staging-weu',  rg:'rg-staging-westeurope',loc:'westeurope',  sub:'staging-subscription', wp:'Consumption',  wt:'Consumption', wc:'', rid:'rid-006', name:'order-service-staging',rep:1, cpuR:0.25, memR:512,  cpuA:0.03, memA:95,   cpuP:12.0, memP:18.6, sidecars:[] },
+    { env:'cae-prod-neu',     rg:'rg-prod-northeurope',  loc:'northeurope', sub:'prod-subscription',    wp:'dedicated-d4', wt:'D4',          wc:2,  rid:'rid-007', name:'auth-service',         rep:2, cpuR:0.5,  memR:1024, cpuA:0.35, memA:640,  cpuP:70.0, memP:62.5, sidecars:[] },
+    { env:'cae-prod-neu',     rg:'rg-prod-northeurope',  loc:'northeurope', sub:'prod-subscription',    wp:'Consumption',  wt:'Consumption', wc:'', rid:'rid-008', name:'log-aggregator',       rep:1, cpuR:0.25, memR:512,  cpuA:0.12, memA:280,  cpuP:48.0, memP:54.7, sidecars:[] },
+  ];
+
+  const N = 12;
+  // Summary CSV: includes profile SKU and reserved-capacity columns used in profile tooltips.
+  const sumHdr = 'tenant_id;subscription_id;subscription_name;resource_group;environment_name;app_name;workload_kind;container_name;is_sidecar;resource_id;location;workload_profile_name;workload_profile_type;workload_sku_cpu_per_instance;workload_sku_memory_mib_per_instance;profile_capacity_cpu_total;profile_capacity_memory_mib_total;profile_allocated_cpu_total;profile_allocated_memory_mib_total;app_workload_profile;wp_current_count;wp_min_count;wp_max_count;replicas_avg;cpu_request;memory_request_mib;cpu_avg_cores;memory_avg_mib;cpu_utilisation_pct;memory_utilisation_pct';
+  const sumLines = [sumHdr];
+  const tsHdr  = 'resource_id;timestamp;cpu_series_value;memory_series_value';
+  const tsLines = [tsHdr];
+  const minC = a => a.wt === 'Consumption' ? '' : '1';
+  const maxC = a => a.wt === 'Consumption' ? '' : '5';
+
+  for (const a of apps) {
+    // Main container summary row
+    sumLines.push([tenantId, subId, a.sub, a.rg, a.env, a.name, 'app', a.name, '0', a.rid, a.loc,
+             a.wp, a.wt, '', '', '', '', '', '', a.wp, a.wc, minC(a), maxC(a), a.rep, a.cpuR, a.memR, a.cpuA, a.memA, a.cpuP, a.memP].join(';'));
+    // Sidecar summary rows
+    for (const sc of (a.sidecars || [])) {
+      sumLines.push([tenantId, subId, a.sub, a.rg, a.env, a.name, 'app', sc, '1', a.rid, a.loc,
+             a.wp, a.wt, '', '', '', '', '', '', a.wp, a.wc, minC(a), maxC(a), a.rep,
+                     rnd(a.cpuR*0.3,0.1), rnd(a.memR*0.2,50), rnd(a.cpuA*0.3,0.05), rnd(a.memA*0.2,50), rnd(30,10), rnd(25,8)].join(';'));
+    }
+    // Timeseries rows
+    for (let i = 0; i < N; i++) {
+      tsLines.push([a.rid, ts(i,N), rnd(a.cpuA,0.15), rnd(a.memA,200)].join(';'));
+    }
+  }
+
+  SUMMARY_ROWS = parseCSV(sumLines.join('\n'));
+  TS_ROWS      = parseCSV(tsLines.join('\n'));
+  LOADED_FILES = { summary: 'DEMO_container_apps_summary.csv', timeseries: 'DEMO_container_apps_timeseries.csv' };
+  FILTER_OPTIONS = extractFilterOptions(SUMMARY_ROWS, TS_ROWS);
+  ACTIVE_FILTERS = {
+    date_from: FILTER_OPTIONS.date_range?.min || '',
+    date_to:   FILTER_OPTIONS.date_range?.max || '',
+    environment:      new Set(),
+    subscription:     new Set(),
+    location:         new Set(),
+    workload_profile: new Set(),
+  };
+  const filteredResourceIds = new Set(SUMMARY_ROWS.map(r => r.resource_id).filter(Boolean));
+  AGGREGATED = aggregate(SUMMARY_ROWS, getFilteredTsRows(filteredResourceIds));
+  showDashboard();
+}
+
+// ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+// THEME TOGGLE
+// ══════════════════════════════════════════════════════════════
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('dco-theme', next);
+}
+document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+document.getElementById('themeToggleUpload').addEventListener('click', toggleTheme);
+
+// ══════════════════════════════════════════════════════════════
+// STORAGE-BASED FILE LOADING
+// ══════════════════════════════════════════════════════════════
+function ensureStorageSpinner(){
+  let spinner=document.getElementById('storageSpinner');
+  if(spinner)return spinner;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  spinner=document.createElement('div');
+  spinner.id='storageSpinner';
+  spinner.innerHTML='<div class="spinner-ring"></div><div class="spinner-label">Loading data from Azure Storage...<div class="spinner-step" id="spinnerStep">Connecting...</div></div>';
+  uploadScreen.insertBefore(spinner, uploadScreen.firstElementChild ? uploadScreen.firstElementChild.nextSibling : null);
+  return spinner;
+}
+
+function setStorageSpinner(stepText){
+  const spinner=ensureStorageSpinner();
+  const stepEl=document.getElementById('spinnerStep');
+  if(stepEl&&stepText)stepEl.textContent=stepText;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      if(el.dataset.prevDisplay===undefined)el.dataset.prevDisplay=el.style.display||'';
+      el.style.display='none';
+    });
+  }
+
+  spinner.style.display='flex';
+}
+
+function hideStorageSpinner(){
+  const spinner=document.getElementById('storageSpinner');
+  if(spinner)spinner.style.display='none';
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      const prev=(el.dataset.prevDisplay!==undefined)?el.dataset.prevDisplay:'';
+      el.style.display=prev;
+      delete el.dataset.prevDisplay;
+    });
+  }
+}
+window.onFilesLoaded = function(loadedFiles) {
+  const organized = organizeLoadedFiles(loadedFiles);
+  
+  if (organized.summaryContent) {
+    const summaryFile = new File([organized.summaryContent], 'summary.csv', { type: 'text/csv' });
+    handleFile(summaryFile);
+  }
+  
+  if (organized.timeseriesContent) {
+    const timeseriesFile = new File([organized.timeseriesContent], 'timeseries.csv', { type: 'text/csv' });
+    handleFile(timeseriesFile);
+  }
+  
+  hideFileUploadUI();
+};
+
+async function autoLoadFromStorage() {
+  const dashboardId = 'containerApps';
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+
+  if (hasConnection) {
+    setStorageSpinner('Connecting...');
+  }
+
+  const loaded = await initStorageFileLoader(dashboardId, (step) => {
+    setStorageSpinner(step || 'Loading...');
+  });
+
+  if (!loaded) {
+    hideStorageSpinner();
+    showFileUploadUI();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+</script>
+</body>
+</html>
+
+

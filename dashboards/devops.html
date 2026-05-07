@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Azure DevOps Health Check Dashboard</title>
+<link rel="icon" type="image/png" href="../bin/delaware-dee-rgb.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../bin/dashboard-core.css">
+<link rel="stylesheet" href="../bin/dashboard-devops.css">
+<script src="../bin/storage-loader.js"></script>
+<script src="../bin/filter-bar-helper.js"></script>
+<script>
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+
+</head>
+<body class="ambient-glow">
+
+<!-- ═══════════════════════ UPLOAD ═══════════════════════ -->
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode">
+    <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
+  </button>
+  <h1>Azure DevOps Health Check Dashboard</h1>
+  <p>
+    Upload pipeline health, pipeline usage, branch governance, and/or license CSVs exported by
+    <code>azure_devops_health_check.py</code>.<br>
+    Files are parsed entirely in your browser — nothing is uploaded to any server.
+  </p>
+  <div class="drop-zone" id="dropZoneMain" style="max-width:540px;margin:24px auto 0">
+    <div class="icon">📂</div>
+    <div class="label">Drop one or more DevOps Health Check CSV files here</div>
+    <div class="hint">hc_devops_licenses · hc_devops_pipeline_usage · hc_devops_pipeline_health · hc_devops_branches — or click to browse</div>
+  </div>
+  <div id="fileStatusList"></div>
+  <input type="file" id="fileInputMain" accept=".csv" multiple
+         title="Expected files: *_hc_devops_licenses_*.csv, *_hc_devops_pipeline_usage_*.csv, *_hc_devops_pipeline_health_*.csv, *_hc_devops_branches_*.csv">
+  <div id="errorMsg"></div>
+  <div id="loadingMsg">⏳ Parsing…</div>
+  <button id="buildDashBtn" class="btn" style="display:none;margin-top:12px">Build Dashboard →</button>
+  <div style="margin-top:14px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+    <button id="demoBtn" class="btn btn--ghost">Load Demo Data</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════ DASHBOARD ═══════════════════════ -->
+<div id="dashboardScreen" style="display:none">
+  <div class="topbar">
+    <h1>
+      <img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle">
+      <span id="dashTitle">Azure DevOps Health Check Dashboard</span>
+    </h1>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode">
+        <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
+      </button>
+      <button class="topbar-btn" id="reloadBtn">↩ Load another file</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+
+  <div class="filter-bar" id="filterBar"></div>
+  <div class="kpi-row" id="kpis"></div>
+
+  <!-- ── License Inventory ── -->
+  <div class="env-section" id="sect-licenses">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>🪪 License Inventory</h2>
+      <span class="env-summary" id="licensesSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0;margin-top:12px">
+        <div class="row row-2">
+          <div class="card" style="max-width:360px">
+            <h2>By License Type</h2>
+            <div class="chart-wrap" style="height:260px"><canvas id="chartLicenses"></canvas></div>
+          </div>
+          <div class="card" style="flex:2">
+            <h2>License Breakdown</h2>
+            <div class="qc-table-wrap"><table class="qc-table" id="licensesTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Pipeline Health ── -->
+  <div class="env-section" id="sect-health">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>🚦 Pipeline Health</h2>
+      <span class="env-summary" id="healthSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="hc-stat-cards" id="healthStatCards"></div>
+      <div class="dashboard" style="padding:0;margin-top:12px">
+        <div class="row row-2">
+          <div class="card">
+            <h2>By Status Flag</h2>
+            <div class="chart-wrap" style="height:260px"><canvas id="chartHealth"></canvas></div>
+          </div>
+          <div class="card" style="flex:2">
+            <h2>Pipelines</h2>
+            <div class="qc-table-wrap"><table class="qc-table" id="healthTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Pipeline Usage ── -->
+  <div class="env-section" id="sect-usage">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>📊 Pipeline Usage</h2>
+      <span class="env-summary" id="usageSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="hc-stat-cards" id="usageStatCards"></div>
+      <div class="dashboard" style="padding:0;margin-top:12px">
+        <div class="row row-2">
+          <div class="card">
+            <h2>Top 10 by Run Minutes</h2>
+            <div class="chart-wrap" style="height:320px"><canvas id="chartUsage"></canvas></div>
+          </div>
+          <div class="card" style="flex:2">
+            <h2>Pipeline Runs</h2>
+            <div class="qc-table-wrap"><table class="qc-table" id="usageTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Branch Governance ── -->
+  <div class="env-section" id="sect-branches">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>🌿 Branch Governance</h2>
+      <span class="env-summary" id="branchesSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="hc-stat-cards" id="branchesStatCards"></div>
+      <div class="dashboard" style="padding:0;margin-top:12px">
+        <div class="row row-2">
+          <div class="card">
+            <h2>By Flag</h2>
+            <div class="chart-wrap" style="height:260px"><canvas id="chartBranches"></canvas></div>
+          </div>
+          <div class="card" style="flex:2">
+            <h2>Branches</h2>
+            <div class="qc-table-wrap"><table class="qc-table" id="branchesTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════
+// STATE
+// ════════════════════════════════════════════════════════════
+let HEALTH_ALL = [], USAGE_ALL = [], BRANCHES_ALL = [], LICENSES_ALL = [];
+let ACTIVE_PROJECTS = new Set();
+let _chartHealth = null, _chartUsage = null, _chartBranches = null, _chartLicenses = null;
+
+// ════════════════════════════════════════════════════════════
+// HELPERS
+// ════════════════════════════════════════════════════════════
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const pct = (n, d) => d ? Math.round(n / d * 100) : 0;
+
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function tooltipCfg() {
+  const surf2   = css('--surface-2') || '#1e2130';
+  const borderC = css('--border')    || '#2a2d3a';
+  const textC   = css('--text')      || '#e0e4f0';
+  const textDim = css('--text-dim')  || '#8892a4';
+  return {
+    backgroundColor: surf2, borderColor: borderC, borderWidth: 1,
+    titleColor: textC, bodyColor: textDim, cornerRadius: 8, padding: 10,
+    titleFont: { family: "'DM Sans',sans-serif", weight: 600 },
+    bodyFont:  { family: "'JetBrains Mono',monospace", size: 12 },
+  };
+}
+
+function axisColors() {
+  return {
+    textC:   css('--text')   || '#e0e4f0',
+    borderC: css('--border') || '#2a2d3a',
+  };
+}
+
+/** Map a pipeline/branch flag string to badge HTML */
+function flagBadge(flag) {
+  if (!flag) return '<span class="badge badge-green">OK</span>';
+  const f = flag.toUpperCase();
+  if (f.startsWith('NEVER_RUN'))          return `<span class="badge badge-red">NEVER RUN</span>`;
+  if (f.startsWith('LAST_RUN_FAILED'))    return `<span class="badge badge-red">FAILED</span>`;
+  if (f.startsWith('LAST_RUN_CANCELED'))  return `<span class="badge badge-orange">CANCELED</span>`;
+  if (f.startsWith('RUNNING'))            return `<span class="badge badge-blue">RUNNING</span>`;
+  if (f.startsWith('LONG_LIVED_NO_PR'))   return `<span class="badge badge-red">LONG-LIVED</span>`;
+  if (f.startsWith('STALE'))              return `<span class="badge badge-orange">STALE</span>`;
+  if (f.startsWith('ACTIVE_NO_PR'))       return `<span class="badge badge-yellow">NO PR</span>`;
+  if (f === 'OK' || f === '')             return `<span class="badge badge-green">OK</span>`;
+  return `<span class="badge badge-dim">${esc(flag)}</span>`;
+}
+
+function flagCategory(flag) {
+  if (!flag) return 'OK';
+  const f = flag.toUpperCase();
+  if (f.startsWith('NEVER_RUN'))         return 'Never Run';
+  if (f.startsWith('LAST_RUN_FAILED'))   return 'Failed';
+  if (f.startsWith('LAST_RUN_CANCELED')) return 'Canceled';
+  if (f.startsWith('RUNNING'))           return 'Running';
+  if (f.startsWith('LONG_LIVED_NO_PR'))  return 'Long-Lived';
+  if (f.startsWith('STALE'))             return 'Stale';
+  if (f.startsWith('ACTIVE_NO_PR'))      return 'Active (No PR)';
+  if (f === 'OK' || f === '')            return 'OK';
+  return flag;
+}
+
+// ════════════════════════════════════════════════════════════
+// CSV PARSING
+// ════════════════════════════════════════════════════════════
+function parseCsv(text) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  if (!lines.length) return { header: [], records: [] };
+  if (lines[0].charCodeAt(0) === 0xFEFF) lines[0] = lines[0].slice(1);
+  const header = lines[0].split(';').map(h => h.trim().toLowerCase());
+  const records = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cells = line.split(';');
+    const rec = {};
+    header.forEach((h, j) => { rec[h] = (cells[j] || '').trim(); });
+    records.push(rec);
+  }
+  return { header, records };
+}
+
+function detectType(header) {
+  if (header.includes('last_run_result') || (header.includes('last_run_status') && header.includes('flag'))) return 'health';
+  if (header.includes('total_minutes'))    return 'usage';
+  if (header.includes('commits_ahead'))    return 'branches';
+  if (header.includes('license_type'))     return 'licenses';
+  return null;
+}
+
+// ════════════════════════════════════════════════════════════
+// FILE HANDLING
+// ════════════════════════════════════════════════════════════
+const errorMsg   = document.getElementById('errorMsg');
+const loadingMsg = document.getElementById('loadingMsg');
+const buildBtn   = document.getElementById('buildDashBtn');
+
+(function () {
+  const zone = document.getElementById('dropZoneMain');
+  const inp  = document.getElementById('fileInputMain');
+  zone.addEventListener('click', () => inp.click());
+  zone.addEventListener('dragover',  e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+  });
+  inp.addEventListener('change', () => {
+    if (!inp.files.length) return;
+    const files = [...inp.files].filter(f => {
+      if (!/_hc_devops_/i.test(f.name))
+        return confirm(`"${f.name}" doesn't look like a DevOps Health Check export.\nExpected a filename containing "_hc_devops_".\n\nLoad it anyway?`);
+      return true;
+    });
+    if (files.length) handleFiles(files);
+    inp.value = '';
+  });
+})();
+
+function handleFiles(fileList) {
+  errorMsg.textContent = '';
+  loadingMsg.style.display = 'block';
+  const files = Array.from(fileList);
+  let processed = 0;
+  const errors = [];
+  files.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      processed++;
+      try {
+        const { header, records } = parseCsv(e.target.result);
+        if (!records.length) throw new Error(`No data rows in "${file.name}".`);
+        const type = detectType(header);
+        if (!type) throw new Error(`Cannot detect type for "${file.name}" — check column names.`);
+        if (type === 'health')   HEALTH_ALL   = records;
+        if (type === 'usage')    USAGE_ALL    = records;
+        if (type === 'branches') BRANCHES_ALL = records;
+        if (type === 'licenses') LICENSES_ALL = records;
+      } catch (err) {
+        errors.push(err.message);
+      }
+      if (processed === files.length) {
+        loadingMsg.style.display = 'none';
+        if (errors.length) errorMsg.textContent = '❌ ' + errors.join('  |  ');
+        updateFileStatus();
+        if (HEALTH_ALL.length || USAGE_ALL.length || BRANCHES_ALL.length || LICENSES_ALL.length) buildBtn.style.display = '';
+      }
+    };
+    reader.onerror = () => {
+      processed++;
+      errors.push(`Failed to read "${file.name}".`);
+      if (processed === files.length) {
+        loadingMsg.style.display = 'none';
+        errorMsg.textContent = '❌ ' + errors.join('  |  ');
+      }
+    };
+    reader.readAsText(file, 'utf-8');
+  });
+}
+
+function updateFileStatus() {
+  const list = document.getElementById('fileStatusList');
+  const zone = document.getElementById('dropZoneMain');
+  const items = [];
+  if (HEALTH_ALL.length)   items.push(`🚦 Pipeline Health — ${HEALTH_ALL.length} pipelines`);
+  if (USAGE_ALL.length)    items.push(`📊 Pipeline Usage — ${USAGE_ALL.length} pipelines`);
+  if (BRANCHES_ALL.length) items.push(`🌿 Branch Governance — ${BRANCHES_ALL.length} branches`);
+  if (LICENSES_ALL.length) items.push(`🪪 Licenses — ${LICENSES_ALL.length} license types`);
+  list.innerHTML = items.map(i => `<div class="file-status-item">${i}</div>`).join('');
+  if (items.length) zone.classList.add('loaded'); else zone.classList.remove('loaded');
+}
+
+buildBtn.addEventListener('click', () => showDashboard('DevOps'));
+
+document.getElementById('reloadBtn').addEventListener('click', () => {
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('uploadScreen').style.display = 'flex';
+  HEALTH_ALL = []; USAGE_ALL = []; BRANCHES_ALL = []; LICENSES_ALL = [];
+  ACTIVE_PROJECTS = new Set();
+  document.getElementById('dropZoneMain').classList.remove('loaded');
+  document.getElementById('fileStatusList').innerHTML = '';
+  buildBtn.style.display = 'none';
+  errorMsg.textContent = '';
+  [_chartHealth, _chartUsage, _chartBranches, _chartLicenses].forEach(c => { if (c) c.destroy(); });
+  _chartHealth = _chartUsage = _chartBranches = _chartLicenses = null;
+});
+
+// ════════════════════════════════════════════════════════════
+// SHOW DASHBOARD
+// ════════════════════════════════════════════════════════════
+function showDashboard(label) {
+  document.getElementById('uploadScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'block';
+  const sources = [HEALTH_ALL, USAGE_ALL, BRANCHES_ALL, LICENSES_ALL].filter(a => a.length > 0).length;
+  const total   = HEALTH_ALL.length + USAGE_ALL.length + BRANCHES_ALL.length + LICENSES_ALL.length;
+  document.getElementById('dashMeta').textContent = `${total} items · ${sources} data source${sources !== 1 ? 's' : ''}`;
+  buildFilterBar();
+  renderAll();
+}
+
+// ════════════════════════════════════════════════════════════
+// FILTER BAR (project filter, extracted from pipeline/branch folder)
+// ════════════════════════════════════════════════════════════
+function buildFilterBar() {
+  const allProjects = [...new Set(
+    [...HEALTH_ALL, ...USAGE_ALL, ...BRANCHES_ALL]
+      .map(r => r.project || r.folder || '')
+      .filter(Boolean)
+  )].sort();
+
+  const bar = document.getElementById('filterBar');
+  bar.innerHTML = '<span class="filter-label">Filters</span>';
+  if (!allProjects.length) return;
+
+  const group = document.createElement('div');
+  group.className = 'filter-group';
+  const countLabel = ACTIVE_PROJECTS.size === 0 ? 'All' : `${ACTIVE_PROJECTS.size}/${allProjects.length}`;
+  group.innerHTML = `
+    <button class="filter-btn">
+      📁 Project <span class="count">${countLabel}</span> <span class="arrow">▼</span>
+    </button>
+    <div class="filter-dropdown">
+      <div class="filter-actions">
+        <button data-action="all">Select All</button>
+        <button data-action="none">Select None</button>
+      </div>
+      <div class="filter-search"><input type="text" placeholder="Search…"></div>
+      <div class="filter-list"></div>
+    </div>`;
+
+  const list = group.querySelector('.filter-list');
+  allProjects.forEach(proj => {
+    const checked = ACTIVE_PROJECTS.size === 0 || ACTIVE_PROJECTS.has(proj);
+    const item = document.createElement('div');
+    item.className = 'filter-item';
+    item.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''} value="${esc(proj)}"><label title="${esc(proj)}">${esc(proj)}</label>`;
+    const cb = item.querySelector('input');
+    cb.addEventListener('change', onProjectChange);
+    item.querySelector('label').addEventListener('click', e => { e.preventDefault(); cb.checked = !cb.checked; onProjectChange(); });
+    list.appendChild(item);
+  });
+
+  group.querySelector('.filter-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    const wasOpen = group.classList.contains('open');
+    document.querySelectorAll('.filter-group').forEach(g => g.classList.remove('open'));
+    if (!wasOpen) group.classList.add('open');
+  });
+  group.querySelector('.filter-search input').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    list.querySelectorAll('.filter-item').forEach(item => {
+      item.style.display = item.querySelector('input').value.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+  group.querySelectorAll('.filter-actions button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const a = btn.dataset.action;
+      list.querySelectorAll('input[type=checkbox]').forEach(cb => {
+        if (cb.closest('.filter-item').style.display !== 'none') cb.checked = a === 'all';
+      });
+      onProjectChange();
+    });
+  });
+  bar.appendChild(group);
+
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'filter-reset-all';
+  resetBtn.textContent = 'Reset All';
+  resetBtn.addEventListener('click', () => { ACTIVE_PROJECTS = new Set(); buildFilterBar(); renderAll(); });
+  bar.appendChild(resetBtn);
+
+  document.addEventListener('click', () => document.querySelectorAll('.filter-group').forEach(g => g.classList.remove('open')));
+  bar.addEventListener('click', e => e.stopPropagation());
+}
+
+function onProjectChange() {
+  const group = document.querySelector('.filter-group');
+  if (!group) return;
+  const allProjects = [...new Set([...HEALTH_ALL, ...USAGE_ALL, ...BRANCHES_ALL]
+    .map(r => r.project || r.folder || '').filter(Boolean))];
+  const sel = new Set();
+  group.querySelectorAll('.filter-list input:checked').forEach(cb => sel.add(cb.value));
+  ACTIVE_PROJECTS = (sel.size === 0 || sel.size === allProjects.length) ? new Set() : sel;
+  group.querySelector('.count').textContent =
+    ACTIVE_PROJECTS.size === 0 ? 'All' : `${ACTIVE_PROJECTS.size}/${allProjects.length}`;
+  renderAll();
+}
+
+const filteredHealth   = () => ACTIVE_PROJECTS.size ? HEALTH_ALL.filter(r => ACTIVE_PROJECTS.has(r.project || r.folder || '')) : HEALTH_ALL;
+const filteredUsage    = () => ACTIVE_PROJECTS.size ? USAGE_ALL.filter(r => ACTIVE_PROJECTS.has(r.project || r.folder || '')) : USAGE_ALL;
+const filteredBranches = () => ACTIVE_PROJECTS.size ? BRANCHES_ALL.filter(r => ACTIVE_PROJECTS.has(r.project || r.folder || '')) : BRANCHES_ALL;
+const filteredLicenses = () => LICENSES_ALL; // licenses are org-wide
+
+function renderAll() {
+  const health   = filteredHealth();
+  const usage    = filteredUsage();
+  const branches = filteredBranches();
+  const licenses = filteredLicenses();
+  renderKpis(health, usage, branches, licenses);
+  document.getElementById('sect-health').style.display   = HEALTH_ALL.length   ? '' : 'none';
+  document.getElementById('sect-usage').style.display    = USAGE_ALL.length    ? '' : 'none';
+  document.getElementById('sect-branches').style.display = BRANCHES_ALL.length ? '' : 'none';
+  document.getElementById('sect-licenses').style.display = LICENSES_ALL.length ? '' : 'none';
+  if (HEALTH_ALL.length)   renderHealth(health);
+  if (USAGE_ALL.length)    renderUsage(usage);
+  if (BRANCHES_ALL.length) renderBranches(branches);
+  if (LICENSES_ALL.length) renderLicenses(licenses);
+}
+
+// ════════════════════════════════════════════════════════════
+// KPI ROW
+// ════════════════════════════════════════════════════════════
+function renderKpis(health, usage, branches, licenses) {
+  const el = document.getElementById('kpis');
+
+  const neverRun  = health.filter(r => (r.flag || '').toUpperCase().startsWith('NEVER_RUN')).length;
+  const failed    = health.filter(r => (r.flag || '').toUpperCase().startsWith('LAST_RUN_FAILED')).length;
+  const canceled  = health.filter(r => (r.flag || '').toUpperCase().startsWith('LAST_RUN_CANCELED')).length;
+  const unhealthy = neverRun + failed + canceled;
+
+  const stale     = branches.filter(r => (r.flag || '').toUpperCase().startsWith('STALE')).length;
+  const longLived = branches.filter(r => (r.flag || '').toUpperCase().startsWith('LONG_LIVED_NO_PR')).length;
+  const branchIssues = stale + longLived;
+
+  const totalLicenses = licenses.reduce((s, r) => s + (parseInt(r.user_count, 10) || 0), 0);
+
+  const totalRuns = usage.reduce((s, r) => s + (parseInt(r.run_count, 10) || 0), 0);
+  const totalMins = usage.reduce((s, r) => s + (parseFloat(r.total_minutes) || 0), 0);
+
+  el.innerHTML = `
+    ${health.length ? `<div class="kpi">
+      <div class="label">Pipeline Health</div>
+      <div class="value">${health.length}</div>
+      <div class="sub-value">${unhealthy > 0 ? `<span style="color:var(--red)">${unhealthy} need attention</span>` : '✅ All healthy'}</div>
+    </div>` : ''}
+    ${usage.length ? `<div class="kpi">
+      <div class="label">Pipeline Runs</div>
+      <div class="value">${totalRuns}</div>
+      <div class="sub-value">${Math.round(totalMins)} min total · ${usage.length} pipelines</div>
+    </div>` : ''}
+    ${branches.length ? `<div class="kpi">
+      <div class="label">Branch Governance</div>
+      <div class="value">${branches.length}</div>
+      <div class="sub-value">${branchIssues > 0 ? `<span style="color:var(--red)">${branchIssues} flagged</span>` : '✅ All clean'}</div>
+    </div>` : ''}
+    ${licenses.length ? `<div class="kpi">
+      <div class="label">Licensed Users</div>
+      <div class="value">${totalLicenses}</div>
+      <div class="sub-value">${licenses.length} license type${licenses.length !== 1 ? 's' : ''}</div>
+    </div>` : ''}
+    <div class="kpi">
+      <div class="label">Data Sources</div>
+      <div class="value">${[health, usage, branches, licenses].filter(a => a.length > 0).length}</div>
+      <div class="sub-value">${[health.length?'Health':'', usage.length?'Usage':'', branches.length?'Branches':'', licenses.length?'Licenses':''].filter(Boolean).join(' · ')}</div>
+    </div>`;
+}
+
+// ════════════════════════════════════════════════════════════
+// PIPELINE HEALTH
+// ════════════════════════════════════════════════════════════
+function renderHealth(health) {
+  const neverRun = health.filter(r => (r.flag || '').toUpperCase().startsWith('NEVER_RUN')).length;
+  const failed   = health.filter(r => (r.flag || '').toUpperCase().startsWith('LAST_RUN_FAILED')).length;
+  const canceled = health.filter(r => (r.flag || '').toUpperCase().startsWith('LAST_RUN_CANCELED')).length;
+  const running  = health.filter(r => (r.flag || '').toUpperCase().startsWith('RUNNING')).length;
+  const ok       = health.filter(r => { const f = (r.flag || '').toUpperCase(); return !f || f === 'OK'; }).length;
+
+  document.getElementById('healthSummary').textContent =
+    `${health.length} pipelines · ${failed + neverRun} need attention`;
+
+  // Stat cards
+  const cards = [
+    { icon: '✅', label: 'Healthy',   count: ok,       color: '#76d077', sub: `${pct(ok, health.length)}% of total` },
+    { icon: '❌', label: 'Failed',    count: failed,   color: failed   > 0 ? '#d92329' : '#8892a4', sub: 'last run failed' },
+    { icon: '⚠️', label: 'Canceled',  count: canceled, color: canceled > 0 ? '#f59e42' : '#8892a4', sub: 'last run canceled' },
+    { icon: '🚫', label: 'Never Run', count: neverRun, color: neverRun > 0 ? '#d92329' : '#8892a4', sub: 'no run history' },
+    { icon: '🔄', label: 'Running',   count: running,  color: '#38bdf8', sub: 'currently running' },
+  ];
+  document.getElementById('healthStatCards').innerHTML = cards.map(c =>
+    `<div class="hc-stat-card" style="border-top-color:${c.color}">
+      <div class="sc-icon">${c.icon}</div>
+      <div class="sc-label">${esc(c.label)}</div>
+      <div class="sc-count">${c.count}</div>
+      <div class="sc-sub">${esc(c.sub)}</div>
+    </div>`
+  ).join('');
+
+  // Chart: bar by flag category
+  if (_chartHealth) { _chartHealth.destroy(); _chartHealth = null; }
+  const flagMap = {};
+  health.forEach(r => {
+    const cat = flagCategory(r.flag || '');
+    flagMap[cat] = (flagMap[cat] || 0) + 1;
+  });
+  const flagOrder = ['Failed', 'Never Run', 'Canceled', 'Running', 'OK'];
+  const activeFlags = [...Object.keys(flagMap)].sort((a, b) => {
+    const ia = flagOrder.indexOf(a), ib = flagOrder.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+  const flagColors = {
+    'Failed':        '#d9232999',
+    'Never Run':     '#d92329cc',
+    'Canceled':      '#f59e4299',
+    'Running':       '#38bdf899',
+    'OK':            '#76d07799',
+    'Active (No PR)':'#facc1599',
+    'Long-Lived':    '#d9232999',
+    'Stale':         '#f59e4299',
+  };
+  const { textC, borderC } = axisColors();
+  _chartHealth = new Chart(document.getElementById('chartHealth').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: activeFlags,
+      datasets: [{ label: 'Pipelines', data: activeFlags.map(f => flagMap[f] || 0), backgroundColor: activeFlags.map(f => flagColors[f] || '#8892a499'), borderRadius: 6, barPercentage: .6 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { color: textC, font: { size: 11 } }, grid: { display: false } },
+        y: { ticks: { font: { family: "'JetBrains Mono'", size: 10 } }, grid: { color: borderC + '44' } },
+      },
+      plugins: { legend: { display: false }, tooltip: { ...tooltipCfg() } },
+    },
+  });
+
+  // Table — flagged first, then alphabetical
+  const sorted = [...health].sort((a, b) => {
+    const fa = (a.flag || '').toUpperCase(), fb = (b.flag || '').toUpperCase();
+    const bad = f => f && f !== 'OK' ? 0 : 1;
+    if (bad(fa) !== bad(fb)) return bad(fa) - bad(fb);
+    return (a.pipeline_name || '').localeCompare(b.pipeline_name || '');
+  });
+  let html = `<thead><tr>
+    <th>Project</th>
+    <th>Pipeline</th>
+    <th>Folder</th>
+    <th>Last Run Status</th>
+    <th>Last Run Result</th>
+    <th>Last Run Date</th>
+    <th>Flag</th>
+  </tr></thead><tbody>`;
+  sorted.forEach(r => {
+    const d = r.last_run_date ? r.last_run_date.split('T')[0] : '—';
+    html += `<tr>
+      <td class="td-dim">${esc(r.project || '')}</td>
+      <td class="td-desc" title="${esc(r.pipeline_name || '')}">${esc(r.pipeline_name || '')}</td>
+      <td class="td-dim" title="${esc(r.folder || '')}">${esc(r.folder || '\\')}</td>
+      <td class="td-dim">${esc(r.last_run_status || '—')}</td>
+      <td class="td-dim">${esc(r.last_run_result || '—')}</td>
+      <td class="td-mono td-dim">${esc(d)}</td>
+      <td>${flagBadge(r.flag)}</td>
+    </tr>`;
+  });
+  document.getElementById('healthTable').innerHTML = html + '</tbody>';
+}
+
+// ════════════════════════════════════════════════════════════
+// PIPELINE USAGE
+// ════════════════════════════════════════════════════════════
+function renderUsage(usage) {
+  const totalRuns = usage.reduce((s, r) => s + (parseInt(r.run_count, 10) || 0), 0);
+  const totalMins = usage.reduce((s, r) => s + (parseFloat(r.total_minutes) || 0), 0);
+  const totalSucc = usage.reduce((s, r) => s + (parseInt(r.succeeded_count, 10) || 0), 0);
+  const totalFail = usage.reduce((s, r) => s + (parseInt(r.failed_count, 10) || 0), 0);
+
+  document.getElementById('usageSummary').textContent =
+    `${usage.length} pipelines · ${totalRuns} runs · ${Math.round(totalMins)} min`;
+
+  // Stat cards
+  const successRate = pct(totalSucc, totalRuns);
+  const cards = [
+    { icon: '▶️',  label: 'Total Runs',   count: totalRuns,           color: '#38bdf8', sub: `across ${usage.length} pipelines` },
+    { icon: '⏱️',  label: 'Total Minutes', count: Math.round(totalMins), color: '#a78bfa', sub: `${Math.round(totalMins / 60)} hours` },
+    { icon: '✅',  label: 'Succeeded',    count: totalSucc,           color: '#76d077', sub: `${successRate}% success rate` },
+    { icon: '❌',  label: 'Failed',       count: totalFail,           color: totalFail > 0 ? '#d92329' : '#8892a4', sub: `${pct(totalFail, totalRuns)}% failure rate` },
+  ];
+  document.getElementById('usageStatCards').innerHTML = cards.map(c =>
+    `<div class="hc-stat-card" style="border-top-color:${c.color}">
+      <div class="sc-icon">${c.icon}</div>
+      <div class="sc-label">${esc(c.label)}</div>
+      <div class="sc-count">${c.count}</div>
+      <div class="sc-sub">${esc(c.sub)}</div>
+    </div>`
+  ).join('');
+
+  // Chart: horizontal bar — top 10 by minutes
+  if (_chartUsage) { _chartUsage.destroy(); _chartUsage = null; }
+  const top10 = [...usage].sort((a, b) => (parseFloat(b.total_minutes) || 0) - (parseFloat(a.total_minutes) || 0)).slice(0, 10);
+  const usageLabels = top10.map(r => (r.pipeline_name || '').length > 32 ? (r.pipeline_name || '').slice(0, 32) + '…' : (r.pipeline_name || ''));
+  const usageData   = top10.map(r => Math.round(parseFloat(r.total_minutes) || 0));
+  const { textC, borderC } = axisColors();
+  _chartUsage = new Chart(document.getElementById('chartUsage').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: usageLabels,
+      datasets: [{ label: 'Minutes', data: usageData, backgroundColor: '#a78bfa99', borderRadius: 4, barPercentage: .72 }],
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { font: { family: "'JetBrains Mono'", size: 10 } }, grid: { display: false } },
+        y: { ticks: { font: { size: 10 }, color: textC }, grid: { display: false } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          ...tooltipCfg(),
+          callbacks: { title: items => top10[items[0].dataIndex].pipeline_name || '' },
+        },
+      },
+    },
+  });
+
+  // Table — by run count desc
+  const sorted = [...usage].sort((a, b) => (parseInt(b.run_count, 10) || 0) - (parseInt(a.run_count, 10) || 0));
+  let html = `<thead><tr>
+    <th>Project</th>
+    <th>Pipeline</th>
+    <th>Folder</th>
+    <th class="td-r">Runs</th>
+    <th class="td-r">Minutes</th>
+    <th class="td-r">Succeeded</th>
+    <th class="td-r">Failed</th>
+    <th class="td-r">Partial</th>
+  </tr></thead><tbody>`;
+  sorted.forEach(r => {
+    const runs = parseInt(r.run_count, 10) || 0;
+    const mins = Math.round(parseFloat(r.total_minutes) || 0);
+    const succ = parseInt(r.succeeded_count, 10) || 0;
+    const fail = parseInt(r.failed_count, 10) || 0;
+    const part = parseInt(r.partial_count, 10) || 0;
+    const failColor = fail > 0 ? 'color:var(--red)' : '';
+    html += `<tr>
+      <td class="td-dim">${esc(r.project || '')}</td>
+      <td class="td-desc" title="${esc(r.pipeline_name || '')}">${esc(r.pipeline_name || '')}</td>
+      <td class="td-dim" title="${esc(r.folder || '')}">${esc(r.folder || '\\')}</td>
+      <td class="td-r">${runs}</td>
+      <td class="td-r">${mins}</td>
+      <td class="td-r" style="color:var(--green)">${succ}</td>
+      <td class="td-r" style="${failColor}">${fail}</td>
+      <td class="td-r td-dim">${part}</td>
+    </tr>`;
+  });
+  document.getElementById('usageTable').innerHTML = html + '</tbody>';
+}
+
+// ════════════════════════════════════════════════════════════
+// BRANCH GOVERNANCE
+// ════════════════════════════════════════════════════════════
+function renderBranches(branches) {
+  const stale     = branches.filter(r => (r.flag || '').toUpperCase().startsWith('STALE')).length;
+  const longLived = branches.filter(r => (r.flag || '').toUpperCase().startsWith('LONG_LIVED_NO_PR')).length;
+  const activeNoPr= branches.filter(r => (r.flag || '').toUpperCase().startsWith('ACTIVE_NO_PR')).length;
+  const ok        = branches.filter(r => { const f = (r.flag || '').toUpperCase(); return !f || f === 'OK'; }).length;
+
+  document.getElementById('branchesSummary').textContent =
+    `${branches.length} branches · ${stale + longLived} flagged`;
+
+  // Stat cards
+  const cards = [
+    { icon: '✅', label: 'Clean',        count: ok,        color: '#76d077', sub: `${pct(ok, branches.length)}% of total` },
+    { icon: '🕸️', label: 'Stale',        count: stale,     color: stale > 0     ? '#f59e42' : '#8892a4', sub: 'no recent commits' },
+    { icon: '🌲', label: 'Long-Lived',   count: longLived, color: longLived > 0 ? '#d92329' : '#8892a4', sub: 'no open PR' },
+    { icon: '🔀', label: 'Active No PR', count: activeNoPr,color: activeNoPr > 0 ? '#facc15' : '#8892a4', sub: 'active, no PR open' },
+  ];
+  document.getElementById('branchesStatCards').innerHTML = cards.map(c =>
+    `<div class="hc-stat-card" style="border-top-color:${c.color}">
+      <div class="sc-icon">${c.icon}</div>
+      <div class="sc-label">${esc(c.label)}</div>
+      <div class="sc-count">${c.count}</div>
+      <div class="sc-sub">${esc(c.sub)}</div>
+    </div>`
+  ).join('');
+
+  // Chart: bar by flag
+  if (_chartBranches) { _chartBranches.destroy(); _chartBranches = null; }
+  const flagMap = {};
+  branches.forEach(r => {
+    const cat = flagCategory(r.flag || '');
+    flagMap[cat] = (flagMap[cat] || 0) + 1;
+  });
+  const flagOrder = ['Long-Lived', 'Stale', 'Active (No PR)', 'OK'];
+  const activeFlags = [...Object.keys(flagMap)].sort((a, b) => {
+    const ia = flagOrder.indexOf(a), ib = flagOrder.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+  const flagColors = {
+    'Long-Lived':    '#d9232999',
+    'Stale':         '#f59e4299',
+    'Active (No PR)':'#facc1599',
+    'OK':            '#76d07799',
+  };
+  const { textC, borderC } = axisColors();
+  _chartBranches = new Chart(document.getElementById('chartBranches').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: activeFlags,
+      datasets: [{ label: 'Branches', data: activeFlags.map(f => flagMap[f] || 0), backgroundColor: activeFlags.map(f => flagColors[f] || '#8892a499'), borderRadius: 6, barPercentage: .6 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { color: textC, font: { size: 11 } }, grid: { display: false } },
+        y: { ticks: { font: { family: "'JetBrains Mono'", size: 10 } }, grid: { color: borderC + '44' } },
+      },
+      plugins: { legend: { display: false }, tooltip: { ...tooltipCfg() } },
+    },
+  });
+
+  // Table — flagged first
+  const flagPriority = f => {
+    const fu = (f || '').toUpperCase();
+    if (fu.startsWith('LONG_LIVED_NO_PR')) return 0;
+    if (fu.startsWith('STALE'))            return 1;
+    if (fu.startsWith('ACTIVE_NO_PR'))     return 2;
+    return 3;
+  };
+  const sorted = [...branches].sort((a, b) => {
+    const pa = flagPriority(a.flag), pb = flagPriority(b.flag);
+    if (pa !== pb) return pa - pb;
+    return (parseInt(b.days_since_commit, 10) || 0) - (parseInt(a.days_since_commit, 10) || 0);
+  });
+  let html = `<thead><tr>
+    <th>Project</th>
+    <th>Repository</th>
+    <th>Branch</th>
+    <th>Default</th>
+    <th>Last Commit</th>
+    <th class="td-r">Days Ago</th>
+    <th class="td-r">Ahead</th>
+    <th class="td-r">Behind</th>
+    <th>Open PR</th>
+    <th>Flag</th>
+  </tr></thead><tbody>`;
+  sorted.forEach(r => {
+    const d      = r.last_commit_date ? r.last_commit_date.split('T')[0] : '—';
+    const days   = parseInt(r.days_since_commit, 10) || 0;
+    const isDefault = String(r.default_branch).toLowerCase() === 'true';
+    const hasPr  = ['true', 'yes', '1'].includes(String(r.has_open_pr).toLowerCase());
+    const daysColor = days > 90 ? 'color:var(--red)' : days > 30 ? 'color:#f59e42' : '';
+    html += `<tr>
+      <td class="td-dim">${esc(r.project || '')}</td>
+      <td class="td-desc" title="${esc(r.repo_name || '')}">${esc(r.repo_name || '')}</td>
+      <td class="td-mono" title="${esc(r.branch_name || '')}">${esc(r.branch_name || '')}</td>
+      <td class="td-dim">${isDefault ? '<span class="badge badge-blue">default</span>' : ''}</td>
+      <td class="td-mono td-dim">${esc(d)}</td>
+      <td class="td-r" style="${daysColor}">${days}</td>
+      <td class="td-r td-dim">${esc(r.commits_ahead || '0')}</td>
+      <td class="td-r td-dim">${esc(r.commits_behind || '0')}</td>
+      <td class="td-dim">${hasPr ? '<span class="badge badge-green">yes</span>' : '<span class="badge badge-dim">no</span>'}</td>
+      <td>${flagBadge(r.flag)}</td>
+    </tr>`;
+  });
+  document.getElementById('branchesTable').innerHTML = html + '</tbody>';
+}
+
+// ════════════════════════════════════════════════════════════
+// LICENSES
+// ════════════════════════════════════════════════════════════
+function renderLicenses(licenses) {
+  const total = licenses.reduce((s, r) => s + (parseInt(r.user_count, 10) || 0), 0);
+  document.getElementById('licensesSummary').textContent =
+    `${total} licensed users · ${licenses.length} license type${licenses.length !== 1 ? 's' : ''}`;
+
+  // Chart: doughnut by license type
+  if (_chartLicenses) { _chartLicenses.destroy(); _chartLicenses = null; }
+  const sorted = [...licenses].sort((a, b) => (parseInt(b.user_count, 10) || 0) - (parseInt(a.user_count, 10) || 0));
+  const licLabels = sorted.map(r => r.license_type || 'Unknown');
+  const licData   = sorted.map(r => parseInt(r.user_count, 10) || 0);
+  const palette   = ['#38bdf8cc','#a78bfacc','#76d077cc','#f59e42cc','#d92329cc','#facc15cc','#8892a4cc'];
+  const licColors = licLabels.map((_, i) => palette[i % palette.length]);
+  const { textC } = axisColors();
+  _chartLicenses = new Chart(document.getElementById('chartLicenses').getContext('2d'), {
+    type: 'doughnut',
+    data: {
+      labels: licLabels,
+      datasets: [{ data: licData, backgroundColor: licColors, borderWidth: 2, borderColor: 'transparent', hoverOffset: 6 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: '60%',
+      plugins: {
+        legend: { display: true, position: 'bottom', labels: { color: textC, font: { size: 11 }, padding: 12, boxWidth: 14 } },
+        tooltip: { ...tooltipCfg() },
+      },
+    },
+  });
+
+  // Table
+  let html = `<thead><tr>
+    <th>Org</th>
+    <th>License Type</th>
+    <th class="td-r">Users</th>
+    <th>Share</th>
+  </tr></thead><tbody>`;
+  sorted.forEach((r, i) => {
+    const count = parseInt(r.user_count, 10) || 0;
+    const share = pct(count, total);
+    const color = palette[i % palette.length].slice(0, 7);
+    html += `<tr>
+      <td class="td-dim">${esc(r.org || '')}</td>
+      <td><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:6px;vertical-align:middle"></span>${esc(r.license_type || 'Unknown')}</td>
+      <td class="td-r">${count}</td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="flex:1;height:6px;border-radius:3px;background:var(--border);overflow:hidden">
+            <div style="width:${share}%;height:100%;border-radius:3px;background:${color}"></div>
+          </div>
+          <span class="td-mono td-dim" style="min-width:36px;text-align:right">${share}%</span>
+        </div>
+      </td>
+    </tr>`;
+  });
+  document.getElementById('licensesTable').innerHTML = html + '</tbody>';
+}
+
+// ════════════════════════════════════════════════════════════
+// COLLAPSIBLE SECTIONS
+// ════════════════════════════════════════════════════════════
+function toggleSection(headerEl) {
+  headerEl.closest('.env-section').classList.toggle('collapsed');
+}
+
+// ════════════════════════════════════════════════════════════
+// THEME TOGGLE
+// ════════════════════════════════════════════════════════════
+function applyThemeToggle() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('dco-theme', next);
+  if (HEALTH_ALL.length || USAGE_ALL.length || BRANCHES_ALL.length || LICENSES_ALL.length) {
+    const health   = filteredHealth();
+    const usage    = filteredUsage();
+    const branches = filteredBranches();
+    const licenses = filteredLicenses();
+    if (HEALTH_ALL.length)   renderHealth(health);
+    if (USAGE_ALL.length)    renderUsage(usage);
+    if (BRANCHES_ALL.length) renderBranches(branches);
+    if (LICENSES_ALL.length) renderLicenses(licenses);
+  }
+}
+document.getElementById('themeToggle').addEventListener('click', applyThemeToggle);
+document.getElementById('themeToggleUpload').addEventListener('click', applyThemeToggle);
+
+// ════════════════════════════════════════════════════════════
+// DEMO DATA
+// ════════════════════════════════════════════════════════════
+document.getElementById('demoBtn').addEventListener('click', () => {
+  HEALTH_ALL   = _genHealthDemo();
+  USAGE_ALL    = _genUsageDemo();
+  BRANCHES_ALL = _genBranchesDemo();
+  LICENSES_ALL = _genLicensesDemo();
+  showDashboard('Demo');
+});
+
+function _lcg(seed) {
+  let s = seed;
+  return () => { s = (s * 1664525 + 1013904223) & 0xffffffff; return (s >>> 0) / 0xffffffff; };
+}
+
+function _genHealthDemo() {
+  const rnd = _lcg(71);
+  const demoProjects = ['SYNH.Synergrid-Infra', 'SYNH.Synergrid-Applications', 'SYNH.Synergrid-Data'];
+  const folders = ['\\Infrastructure', '\\Applications', '\\Data', '\\Shared\\CI', '\\'];
+  const statuses = ['completed', 'completed', 'completed', 'completed', 'inProgress', 'none'];
+  const results  = ['succeeded', 'succeeded', 'succeeded', 'failed', 'canceled', 'none'];
+  const names = [
+    'deploy-aks-cluster', 'build-api-service', 'infra-terraform-plan', 'run-e2e-tests',
+    'publish-npm-package', 'sync-db-migrations', 'validate-bicep', 'scan-containers',
+    'notify-teams-release', 'cleanup-dev-resources', 'nightly-backup-check', 'lint-all-repos',
+    'build-frontend', 'deploy-function-app', 'integration-tests', 'cost-export-job',
+  ];
+  const rows = [];
+  names.forEach((name, i) => {
+    const st  = statuses[Math.floor(rnd() * statuses.length)];
+    const res = st === 'none' ? 'none' : results[Math.floor(rnd() * results.length)];
+    const daysAgo = Math.floor(rnd() * 45);
+    const d   = new Date(Date.now() - daysAgo * 86400000).toISOString();
+    let flag  = '';
+    if (st === 'none')                              flag = 'NEVER_RUN';
+    else if (res === 'failed')                      flag = 'LAST_RUN_FAILED';
+    else if (res === 'canceled')                    flag = 'LAST_RUN_CANCELED';
+    else if (st === 'inProgress')                   flag = 'RUNNING';
+    rows.push({
+      pipeline_id:      String(100 + i),
+      pipeline_name:    name,
+      project:          demoProjects[Math.floor(rnd() * demoProjects.length)],
+      folder:           folders[Math.floor(rnd() * folders.length)],
+      last_run_id:      flag === 'NEVER_RUN' ? '' : String(5000 + Math.floor(rnd() * 5000)),
+      last_run_status:  st,
+      last_run_result:  res,
+      last_run_date:    flag === 'NEVER_RUN' ? '' : d,
+      flag,
+    });
+  });
+  return rows;
+}
+
+function _genUsageDemo() {
+  const rnd = _lcg(72);
+  const demoProjects = ['SYNH.Synergrid-Infra', 'SYNH.Synergrid-Applications', 'SYNH.Synergrid-Data'];
+  const folders = ['\\Infrastructure', '\\Applications', '\\Data', '\\Shared\\CI', '\\'];
+  const names = [
+    'deploy-aks-cluster', 'build-api-service', 'infra-terraform-plan', 'run-e2e-tests',
+    'publish-npm-package', 'sync-db-migrations', 'validate-bicep', 'scan-containers',
+    'notify-teams-release', 'cleanup-dev-resources', 'nightly-backup-check', 'lint-all-repos',
+    'build-frontend', 'deploy-function-app', 'integration-tests', 'cost-export-job',
+  ];
+  return names.map((name, i) => {
+    const runs  = 2 + Math.floor(rnd() * 60);
+    const succ  = Math.floor(runs * (0.6 + rnd() * 0.38));
+    const fail  = Math.floor((runs - succ) * (rnd() * 0.7));
+    const part  = runs - succ - fail;
+    return {
+      pipeline_id:      String(100 + i),
+      pipeline_name:    name,
+      project:          demoProjects[Math.floor(rnd() * demoProjects.length)],
+      folder:           folders[Math.floor(rnd() * folders.length)],
+      run_count:        String(runs),
+      total_minutes:    String(Math.round(runs * (2 + rnd() * 18))),
+      succeeded_count:  String(succ),
+      failed_count:     String(fail),
+      partial_count:    String(Math.max(0, part)),
+    };
+  });
+}
+
+function _genBranchesDemo() {
+  const rnd = _lcg(73);
+  const demoProjects = ['SYNH.Synergrid-Infra', 'SYNH.Synergrid-Applications', 'SYNH.Synergrid-Data'];
+  const repos = ['infra-bicep', 'api-service', 'frontend-app', 'data-pipelines', 'shared-libs'];
+  const rows = [];
+  repos.forEach(repo => {
+    const n = 3 + Math.floor(rnd() * 8);
+    for (let i = 0; i < n; i++) {
+      const isDefault = i === 0;
+      const branch    = isDefault ? 'main' : `feature/task-${1000 + Math.floor(rnd() * 9000)}`;
+      const daysAgo   = isDefault ? Math.floor(rnd() * 5) : Math.floor(rnd() * 120);
+      const ahead     = isDefault ? 0 : Math.floor(rnd() * 20);
+      const behind    = isDefault ? 0 : Math.floor(rnd() * 10);
+      const hasPr     = !isDefault && rnd() > 0.5;
+      let flag = '';
+      if (!isDefault) {
+        if (daysAgo > 60 && ahead > 10 && !hasPr) flag = `LONG_LIVED_NO_PR(${ahead}↑)`;
+        else if (daysAgo > 45)                    flag = `STALE(${daysAgo}d)`;
+        else if (!hasPr && ahead > 0)             flag = 'ACTIVE_NO_PR';
+      }
+      rows.push({
+        project:           demoProjects[Math.floor(rnd() * demoProjects.length)],
+        repo_name:         repo,
+        branch_name:       branch,
+        default_branch:    String(isDefault),
+        last_commit_date:  new Date(Date.now() - daysAgo * 86400000).toISOString(),
+        days_since_commit: String(daysAgo),
+        commits_ahead:     String(ahead),
+        commits_behind:    String(behind),
+        has_open_pr:       String(hasPr),
+        flag,
+      });
+    }
+  });
+  return rows;
+}
+
+function _genLicensesDemo() {
+  return [
+    { org: 'SYNH-DLWR', license_type: 'Basic',              user_count: '42' },
+    { org: 'SYNH-DLWR', license_type: 'Basic + Test Plans', user_count: '8' },
+    { org: 'SYNH-DLWR', license_type: 'Stakeholder',        user_count: '15' },
+    { org: 'SYNH-DLWR', license_type: 'Visual Studio Enterprise', user_count: '5' },
+    { org: 'SYNH-DLWR', license_type: 'Visual Studio Professional', user_count: '3' },
+  ];
+}
+
+// ══════════════════════════════════════════════════════════════
+// STORAGE-BASED FILE LOADING
+// ══════════════════════════════════════════════════════════════
+function ensureStorageSpinner(){
+  let spinner=document.getElementById('storageSpinner');
+  if(spinner)return spinner;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  spinner=document.createElement('div');
+  spinner.id='storageSpinner';
+  spinner.innerHTML='<div class="spinner-ring"></div><div class="spinner-label">Loading data from Azure Storage...<div class="spinner-step" id="spinnerStep">Connecting...</div></div>';
+  uploadScreen.insertBefore(spinner, uploadScreen.firstElementChild ? uploadScreen.firstElementChild.nextSibling : null);
+  return spinner;
+}
+
+function setStorageSpinner(stepText){
+  const spinner=ensureStorageSpinner();
+  const stepEl=document.getElementById('spinnerStep');
+  if(stepEl&&stepText)stepEl.textContent=stepText;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      if(el.dataset.prevDisplay===undefined)el.dataset.prevDisplay=el.style.display||'';
+      el.style.display='none';
+    });
+  }
+
+  spinner.style.display='flex';
+}
+
+function hideStorageSpinner(){
+  const spinner=document.getElementById('storageSpinner');
+  if(spinner)spinner.style.display='none';
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      const prev=(el.dataset.prevDisplay!==undefined)?el.dataset.prevDisplay:'';
+      el.style.display=prev;
+      delete el.dataset.prevDisplay;
+    });
+  }
+}
+window.onFilesLoaded = function(loadedFiles) {
+  for (const file of loadedFiles) {
+    const csvFile = new File([file.content], file.name, { type: 'text/csv' });
+    handleFiles([csvFile]);
+  }
+  
+  hideFileUploadUI();
+};
+
+async function autoLoadFromStorage() {
+  const dashboardId = 'devops';
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+
+  if (hasConnection) {
+    setStorageSpinner('Connecting...');
+  }
+
+  const loaded = await initStorageFileLoader(dashboardId, (step) => {
+    setStorageSpinner(step || 'Loading...');
+  });
+
+  if (!loaded) {
+    hideStorageSpinner();
+    showFileUploadUI();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+</script>
+<script src="../bin/table-sort.js"></script>
+</body>
+</html>
+
+

@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Virtual Machines Dashboard</title>
+<link rel="icon" type="image/png" href="../bin/delaware-dee-rgb.png">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../bin/dashboard-core.css">
+<link rel="stylesheet" href="../bin/dashboard-virtualMachines.css">
+<script src="../bin/storage-loader.js"></script>
+<script src="../bin/filter-bar-helper.js"></script>
+<script>
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+
+</head>
+<body class="ambient-glow">
+<div id="signalTooltip" class="signal-tip" role="tooltip" aria-hidden="true"></div>
+
+<!-- UPLOAD -->
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+  <h1>Virtual Machines Dashboard</h1>
+  <p>Upload the files exported by <code>get_virtualmachines.py</code>. Drop the <strong>summary</strong> and/or <strong>timeseries</strong> CSV — one at a time or both at once.</p>
+  <div id="upload-zone" class="drop-zone" style="max-width:480px;margin:0 auto">
+    <div class="icon">🖥️</div>
+    <div class="label">Drop your CSV file(s) here</div>
+    <div class="hint">summary · timeseries · or both at once</div>
+  </div>
+  <input type="file" id="file-input" accept=".csv" multiple style="display:none"
+         title="Expected files: *_virtual_machines_summary_*.csv and/or *_virtual_machines_timeseries_*.csv">
+  <div id="upload-status" style="min-height:24px;margin:8px 0 2px;font-size:12px;color:var(--text-dim);text-align:center"></div>
+  <div style="margin-top:4px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+    <button class="btn btn--ghost" onclick="loadDemo()">Load Demo Data</button>
+  </div>
+</div>
+
+<!-- DASHBOARD -->
+<div id="dashboardScreen">
+  <div class="topbar">
+    <h1><img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle"><span id="dashTitle">Virtual Machines Dashboard</span></h1>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+      <button class="topbar-btn" id="reloadBtn">↩ Load another CSV</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+
+  <div class="filter-bar" id="filterBar"></div>
+  <div class="kpi-row" id="kpis"></div>
+
+  <div class="env-section" id="sect-signals">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>Cost Signals</h2>
+      <span class="env-summary" id="signalSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full">
+          <div class="card">
+            <div class="table-wrap"><table class="vm-table" id="signalTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="env-section" id="sect-detail">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>VMs Detail</h2>
+      <span class="env-summary" id="detailSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full">
+          <div class="card">
+            <div class="table-wrap"><table class="vm-table" id="detailTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="env-section" id="sect-cards">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>VM Overview Cards</h2>
+      <span class="env-summary" id="cardsSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full">
+          <div class="card">
+            <div class="vm-grid" id="vmGrid"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+// GLOBALS
+// ══════════════════════════════════════════════════════════════
+let SUMMARY_ROWS = [];
+let TS_ROWS      = [];
+let LOADED_FILES = { summary: null, timeseries: null };
+let AGG          = [];
+let FILTER_OPTIONS = {};
+let ACTIVE_FILTERS = {};
+
+const FILTER_DEFS = [
+  { key: 'subscription',          label: 'Subscription',   icon: '📋' },
+  { key: 'location',              label: 'Location',       icon: '📍' },
+  { key: 'os_type',               label: 'OS',             icon: '💻' },
+  { key: 'power_state',           label: 'Power State',    icon: '⚡' },
+  { key: 'priority',              label: 'Priority',       icon: '🏷️' },
+  { key: 'cost_signal_category',  label: 'Cost Signal',    icon: '🔍' },
+];
+
+// ══════════════════════════════════════════════════════════════
+// HELPERS
+// ══════════════════════════════════════════════════════════════
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+function pf(v)  { if (v === '' || v == null) return null; const n = parseFloat(v); return Number.isFinite(n) ? n : null; }
+function pi(v)  { if (v === '' || v == null) return null; const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; }
+function fmtNum(v, d = 1) { return v == null ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }); }
+function fmtInt(v) { return v == null ? '—' : Number(v).toLocaleString('en-US'); }
+function fmtBytes(bytes) {
+  if (bytes == null) return '—';
+  if (bytes >= 1e12) return (bytes / 1e12).toFixed(2) + ' TB';
+  if (bytes >= 1e9)  return (bytes / 1e9).toFixed(2) + ' GB';
+  if (bytes >= 1e6)  return (bytes / 1e6).toFixed(2) + ' MB';
+  return bytes.toFixed(0) + ' B';
+}
+function fmtMem(bytes) {
+  if (bytes == null) return '—';
+  const gb = bytes / 1073741824;
+  return gb.toFixed(2) + ' GB';
+}
+function pctCls(v) { if (v == null) return 'na'; if (v < 40) return 'low'; if (v < 75) return 'mid'; return 'high'; }
+function nvl(v, fb = '') { return (v == null || v === '') ? fb : v; }
+
+function stateClass(state) {
+  const s = (state || '').toLowerCase();
+  if (s === 'running') return 'state-running';
+  if (s === 'deallocated') return 'state-deallocated';
+  if (s === 'stopped' || s === 'stopping') return 'state-stopped';
+  return 'state-other';
+}
+
+function signalBadge(category, reason) {
+  const cat = category || 'review';
+  const tip = reason ? ` data-reason="${esc(reason)}"` : '';
+  return `<span class="signal signal-${esc(cat)}"${tip}>${esc(cat)}</span>`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// CSV PARSING
+// ══════════════════════════════════════════════════════════════
+function parseCSV(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(';').map(h => h.trim());
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = lines[i].split(';');
+    const row = {};
+    headers.forEach((h, j) => { row[h] = (vals[j] || '').trim(); });
+    rows.push(row);
+  }
+  return rows;
+}
+
+function timestampToDateKey(ts) {
+  if (!ts) return '';
+  const ms = Date.parse(ts);
+  if (Number.isNaN(ms)) return '';
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function getDateRange(tsRows) {
+  let minMs = null, maxMs = null;
+  (tsRows || []).forEach(r => {
+    const ms = Date.parse(r.timestamp || '');
+    if (Number.isNaN(ms)) return;
+    if (minMs == null || ms < minMs) minMs = ms;
+    if (maxMs == null || ms > maxMs) maxMs = ms;
+  });
+  if (minMs == null || maxMs == null) return null;
+  return { min: new Date(minMs).toISOString().slice(0, 10), max: new Date(maxMs).toISOString().slice(0, 10) };
+}
+
+// ══════════════════════════════════════════════════════════════
+// FILTER OPTIONS
+// ══════════════════════════════════════════════════════════════
+function extractFilterOptions(summaryRows, tsRows) {
+  const subs = new Set(), locs = new Set(), oss = new Set(), states = new Set(), signals = new Set(), priorities = new Set();
+  (summaryRows || []).forEach(r => {
+    const sub = r.subscription_name || r.subscription_id;
+    if (sub) subs.add(sub);
+    if (r.location) locs.add(r.location);
+    if (r.os_type)  oss.add(r.os_type);
+    if (r.power_state) states.add(r.power_state);
+    if (r.cost_signal_category) signals.add(r.cost_signal_category);
+    if (r.priority) priorities.add(r.priority);
+    else priorities.add('Regular');
+  });
+  return {
+    date_range:           getDateRange(tsRows),
+    subscription:         [...subs].sort(),
+    location:             [...locs].sort(),
+    os_type:              [...oss].sort(),
+    power_state:          [...states].sort(),
+    cost_signal_category: [...signals].sort(),
+    priority:             [...priorities].sort(),
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// FILTERING
+// ══════════════════════════════════════════════════════════════
+function getFilteredSummaryRows() {
+  return SUMMARY_ROWS.filter(r => {
+    const sub = r.subscription_name || r.subscription_id || '';
+    if (ACTIVE_FILTERS.subscription?.size && !ACTIVE_FILTERS.subscription.has(sub)) return false;
+    if (ACTIVE_FILTERS.location?.size && !ACTIVE_FILTERS.location.has(r.location || '')) return false;
+    if (ACTIVE_FILTERS.os_type?.size && !ACTIVE_FILTERS.os_type.has(r.os_type || '')) return false;
+    if (ACTIVE_FILTERS.power_state?.size && !ACTIVE_FILTERS.power_state.has(r.power_state || '')) return false;
+    if (ACTIVE_FILTERS.cost_signal_category?.size && !ACTIVE_FILTERS.cost_signal_category.has(r.cost_signal_category || '')) return false;
+    if (ACTIVE_FILTERS.priority?.size) {
+      const p = r.priority || 'Regular';
+      if (!ACTIVE_FILTERS.priority.has(p)) return false;
+    }
+    return true;
+  });
+}
+
+function getFilteredTsRows(filteredVmIds) {
+  return TS_ROWS.filter(r => {
+    if (filteredVmIds?.size && !filteredVmIds.has(r.vm_id || '')) return false;
+    if (ACTIVE_FILTERS.date_from || ACTIVE_FILTERS.date_to) {
+      const rowDate = timestampToDateKey(r.timestamp);
+      if (rowDate) {
+        if (ACTIVE_FILTERS.date_from && rowDate < ACTIVE_FILTERS.date_from) return false;
+        if (ACTIVE_FILTERS.date_to   && rowDate > ACTIVE_FILTERS.date_to)   return false;
+      }
+    }
+    return true;
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+// AGGREGATION
+// ══════════════════════════════════════════════════════════════
+function aggregate(summaryRows, tsRows) {
+  const vms = new Map();
+  (summaryRows || []).forEach(r => {
+    const key = r.vm_id || `${r.subscription_id}|${r.resource_group}|${r.vm_name}`;
+    vms.set(key, {
+      key,
+      vm_id:                r.vm_id || '',
+      vm_name:              r.vm_name || '',
+      subscription_id:      r.subscription_id || '',
+      subscription_name:    r.subscription_name || '',
+      resource_group:       r.resource_group || '',
+      location:             r.location || '',
+      vm_size:              r.vm_size || '',
+      os_type:              r.os_type || '',
+      os_disk_sku:          r.os_disk_sku || '',
+      os_disk_size_gb:      pi(r.os_disk_size_gb),
+      data_disk_count:      pi(r.data_disk_count) || 0,
+      data_disk_total_size_gb: pf(r.data_disk_total_size_gb),
+      nic_count:            pi(r.nic_count),
+      availability_zone:    r.availability_zone || '',
+      availability_set:     r.availability_set || '',
+      license_type:         r.license_type || '',
+      priority:             r.priority || '',
+      eviction_policy:      r.eviction_policy || '',
+      identity_type:        r.identity_type || '',
+      extensions:           r.extensions || '',
+      power_state:          r.power_state || '',
+      provisioning_state:   r.provisioning_state || '',
+      tags:                 r.tags || '',
+      cost_signal_category: r.cost_signal_category || '',
+      cost_signal_reason:   r.cost_signal_reason || '',
+      observed_sample_count: pi(r.observed_sample_count) || 0,
+      cpu_avg_pct:          pf(r.cpu_avg_pct_window),
+      cpu_p95_pct:          pf(r.cpu_p95_pct_window),
+      cpu_peak_pct:         pf(r.cpu_peak_pct_window),
+      network_in_bytes:     pf(r.network_in_total_bytes_window),
+      network_out_bytes:    pf(r.network_out_total_bytes_window),
+      disk_read_bytes:      pf(r.disk_read_total_bytes_window),
+      disk_write_bytes:     pf(r.disk_write_total_bytes_window),
+      avail_mem_avg_bytes:  pf(r.available_memory_avg_bytes_window),
+      avail_mem_min_bytes:  pf(r.available_memory_min_bytes_window),
+      cpu_series:    [],
+      net_in_series: [],
+    });
+  });
+
+  // Enrich with timeseries sparklines
+  (tsRows || []).forEach(r => {
+    const vm = vms.get(r.vm_id || '');
+    if (!vm || !r.timestamp) return;
+    const cpu = pf(r.cpu_percentage);
+    const net = pf(r.network_in_bytes);
+    if (cpu != null) vm.cpu_series.push({ timestamp: r.timestamp, value: cpu });
+    if (net != null) vm.net_in_series.push({ timestamp: r.timestamp, value: net });
+  });
+
+  // Sort: deallocated/stopped first, then by signal urgency, then name
+  const signalOrder = { 'stopped-billed': 0, 'deallocated': 1, 'non-running': 2, 'oversized-premium': 3, 'low-utilisation': 4, 'scale-down-candidate': 5, 'scale-up-review': 6, 'review': 7 };
+  return [...vms.values()].sort((a, b) => {
+    const sa = signalOrder[a.cost_signal_category] ?? 9;
+    const sb = signalOrder[b.cost_signal_category] ?? 9;
+    return sa !== sb ? sa - sb : a.vm_name.localeCompare(b.vm_name);
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+// FILTER BAR
+// ══════════════════════════════════════════════════════════════
+function buildFilterBar() {
+  const bar = document.getElementById('filterBar');
+  bar.innerHTML = '<span class="filter-label">Filters</span>';
+
+  const dateRange = FILTER_OPTIONS.date_range;
+  if (dateRange?.min && dateRange?.max) {
+    const dateGroup = document.createElement('div');
+    dateGroup.className = 'filter-group filter-date-group';
+    dateGroup.dataset.key = 'date';
+    dateGroup.innerHTML = `
+      <div class="filter-btn filter-btn-static">
+        📅 Date
+        <span class="date-range-inline">
+          <input type="date" class="date-input" data-role="from" min="${dateRange.min}" max="${dateRange.max}" value="${ACTIVE_FILTERS.date_from || dateRange.min}">
+          <span class="date-sep">to</span>
+          <input type="date" class="date-input" data-role="to" min="${dateRange.min}" max="${dateRange.max}" value="${ACTIVE_FILTERS.date_to || dateRange.max}">
+        </span>
+      </div>`;
+    const fromInput = dateGroup.querySelector('input[data-role="from"]');
+    const toInput   = dateGroup.querySelector('input[data-role="to"]');
+    fromInput.addEventListener('change', () => onDateFilterChange(fromInput, toInput));
+    toInput.addEventListener('change',   () => onDateFilterChange(fromInput, toInput));
+    bar.appendChild(dateGroup);
+  }
+
+  FILTER_DEFS.forEach(def => {
+    const options = FILTER_OPTIONS[def.key] || [];
+    if (!options.length) return;
+    const active = ACTIVE_FILTERS[def.key];
+    const group  = document.createElement('div');
+    group.className = 'filter-group';
+    group.dataset.key = def.key;
+
+    const countLabel = active.size === 0 ? 'All' : active.size === options.length ? 'All' : `${active.size}/${options.length}`;
+    group.innerHTML = `
+      <button class="filter-btn">${def.icon} ${def.label} <span class="count">${countLabel}</span> <span class="arrow">▼</span></button>
+      <div class="filter-dropdown">
+        <div class="filter-actions">
+          <button data-action="all">Select All</button>
+          <button data-action="none">Select None</button>
+          <button data-action="invert">Invert</button>
+        </div>
+        <div class="filter-search"><input type="text" placeholder="Search..."></div>
+        <div class="filter-list"></div>
+      </div>`;
+
+    const list = group.querySelector('.filter-list');
+    const isAll = active.size === 0;
+    options.forEach(opt => {
+      const item = document.createElement('div');
+      item.className = 'filter-item';
+      item.innerHTML = `<input type="checkbox" value="${esc(opt)}" ${isAll || active.has(opt) ? 'checked' : ''}><label title="${esc(opt)}">${esc(opt)}</label>`;
+      const cb = item.querySelector('input');
+      cb.addEventListener('change', () => onFilterCheck(def.key));
+      item.querySelector('label').addEventListener('click', e => { e.preventDefault(); cb.checked = !cb.checked; onFilterCheck(def.key); });
+      list.appendChild(item);
+    });
+
+    group.querySelector('.filter-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      const wasOpen = group.classList.contains('open');
+      document.querySelectorAll('.filter-group').forEach(g => g.classList.remove('open'));
+      if (!wasOpen) group.classList.add('open');
+    });
+    group.querySelector('.filter-search input').addEventListener('input', e => {
+      const q = e.target.value.toLowerCase();
+      list.querySelectorAll('.filter-item').forEach(item => {
+        item.style.display = item.querySelector('input').value.toLowerCase().includes(q) ? '' : 'none';
+      });
+    });
+    group.querySelectorAll('.filter-actions button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.dataset.action;
+        const cbs = list.querySelectorAll('input[type=checkbox]');
+        if (action === 'all')    cbs.forEach(cb => { if (cb.closest('.filter-item').style.display !== 'none') cb.checked = true; });
+        else if (action === 'none')   cbs.forEach(cb => { if (cb.closest('.filter-item').style.display !== 'none') cb.checked = false; });
+        else if (action === 'invert') cbs.forEach(cb => { if (cb.closest('.filter-item').style.display !== 'none') cb.checked = !cb.checked; });
+        onFilterCheck(def.key);
+      });
+    });
+    bar.appendChild(group);
+  });
+
+  const reset = document.createElement('button');
+  reset.className = 'filter-reset-all';
+  reset.textContent = 'Reset All';
+  reset.addEventListener('click', () => {
+    FILTER_DEFS.forEach(def => ACTIVE_FILTERS[def.key] = new Set());
+    const dr = FILTER_OPTIONS.date_range;
+    ACTIVE_FILTERS.date_from = dr?.min || '';
+    ACTIVE_FILTERS.date_to   = dr?.max || '';
+    buildFilterBar();
+    applyFilters();
+  });
+  bar.appendChild(reset);
+
+  document.addEventListener('click', () => document.querySelectorAll('.filter-group').forEach(g => g.classList.remove('open')));
+  bar.addEventListener('click', e => e.stopPropagation());
+}
+
+// buildFilterBar, onDateFilterChange, onFilterCheck moved to bin/filter-bar-helper.js
+
+// ══════════════════════════════════════════════════════════════
+// APPLY FILTERS
+// ══════════════════════════════════════════════════════════════
+function applyFilters() {
+  const filteredSummary = getFilteredSummaryRows();
+  const filteredVmIds   = new Set(filteredSummary.map(r => r.vm_id).filter(Boolean));
+  const filteredTs      = getFilteredTsRows(filteredVmIds);
+  AGG = aggregate(filteredSummary, filteredTs);
+  renderKPIs();
+  renderSignalTable();
+  renderDetailTable();
+  renderVmCards();
+}
+
+// ══════════════════════════════════════════════════════════════
+// KPIs
+// ══════════════════════════════════════════════════════════════
+function renderKPIs() {
+  const el = document.getElementById('kpis');
+  if (!AGG.length) {
+    el.innerHTML = '<div class="kpi"><div class="label">No data</div><div class="value">—</div></div>';
+    return;
+  }
+
+  const total        = AGG.length;
+  const running      = AGG.filter(v => v.power_state === 'running').length;
+  const deallocated  = AGG.filter(v => v.power_state === 'deallocated').length;
+  const stoppedBill  = AGG.filter(v => v.cost_signal_category === 'stopped-billed').length;
+  const lowUtil      = AGG.filter(v => v.cost_signal_category === 'low-utilisation').length;
+  const scaleDn      = AGG.filter(v => v.cost_signal_category === 'scale-down-candidate').length;
+  const cpuVms       = AGG.filter(v => v.cpu_p95_pct != null);
+  const avgCpuP95    = cpuVms.length ? cpuVms.reduce((s, v) => s + v.cpu_p95_pct, 0) / cpuVms.length : null;
+
+  el.innerHTML = `
+    <div class="kpi"><div class="label">Total VMs</div><div class="value">${total}</div></div>
+    <div class="kpi"><div class="label">Running</div><div class="value">${running}</div></div>
+    <div class="kpi"><div class="label">Deallocated</div><div class="value">${deallocated}</div></div>
+    <div class="kpi"><div class="label">Stopped (billed)</div><div class="value">${stoppedBill}</div></div>
+    <div class="kpi"><div class="label">Low Utilisation</div><div class="value">${lowUtil}</div></div>
+    <div class="kpi"><div class="label">Scale-Down Candidates</div><div class="value">${scaleDn}</div></div>
+    <div class="kpi"><div class="label">Avg CPU p95</div><div class="value">${fmtNum(avgCpuP95, 1)}%</div></div>`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// SIGNAL TABLE
+// ══════════════════════════════════════════════════════════════
+function renderSignalTable() {
+  const tbl       = document.getElementById('signalTable');
+  const summaryEl = document.getElementById('signalSummary');
+  if (!AGG.length) { tbl.innerHTML = ''; if (summaryEl) summaryEl.textContent = 'No data'; return; }
+
+  const bySignal = new Map();
+  AGG.forEach(v => {
+    const key = v.cost_signal_category || 'review';
+    if (!bySignal.has(key)) bySignal.set(key, { category: key, count: 0, names: [], reason: v.cost_signal_reason || '' });
+    const item = bySignal.get(key);
+    item.count++;
+    item.names.push(v.vm_name);
+  });
+
+  const rows = [...bySignal.values()].sort((a, b) => {
+    const order = { 'stopped-billed': 0, 'deallocated': 1, 'non-running': 2, 'oversized-premium': 3, 'low-utilisation': 4, 'scale-down-candidate': 5, 'scale-up-review': 6, 'review': 7 };
+    return (order[a.category] ?? 9) - (order[b.category] ?? 9);
+  });
+
+  if (summaryEl) summaryEl.textContent = `${rows.length} signal bucket${rows.length !== 1 ? 's' : ''}`;
+  tbl.innerHTML = `
+    <thead><tr><th>Signal</th><th class="num">VMs</th><th>Examples</th></tr></thead>
+    <tbody>${rows.map(r => `<tr>
+      <td>${signalBadge(r.category, r.reason)}</td>
+      <td class="num">${r.count}</td>
+      <td>${esc(r.names.slice(0, 5).join(', '))}${r.names.length > 5 ? ' …' : ''}</td>
+    </tr>`).join('')}</tbody>`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// DETAIL TABLE
+// ══════════════════════════════════════════════════════════════
+function renderDetailTable() {
+  const tbl       = document.getElementById('detailTable');
+  const summaryEl = document.getElementById('detailSummary');
+  if (!AGG.length) { tbl.innerHTML = ''; if (summaryEl) summaryEl.textContent = 'No data'; return; }
+
+  if (summaryEl) summaryEl.textContent = `${AGG.length} VM${AGG.length !== 1 ? 's' : ''} sorted by urgency`;
+
+  tbl.innerHTML = `
+    <thead><tr>
+      <th>VM</th>
+      <th>Size</th>
+      <th>OS</th>
+      <th>Disks</th>
+      <th>Power State</th>
+      <th class="num">CPU p95</th>
+      <th class="num">CPU peak</th>
+      <th class="num">Avail Mem avg</th>
+      <th class="num">Net In</th>
+      <th class="num">Net Out</th>
+      <th>Signal</th>
+    </tr></thead>
+    <tbody>${AGG.map(v => `<tr>
+      <td title="${esc(v.resource_group)} · ${esc(v.subscription_name || v.subscription_id)}">
+        <strong>${esc(v.vm_name)}</strong>
+        <div style="font-size:11px;color:var(--text-dim)">${esc(v.resource_group)} · ${esc(v.location)}</div>
+      </td>
+      <td>${esc(v.vm_size)}</td>
+      <td>${esc(v.os_type)}</td>
+      <td class="num" title="OS disk ${v.os_disk_size_gb != null ? v.os_disk_size_gb + ' GB' : ''} · ${v.data_disk_count} data disk(s)">${fmtInt(v.os_disk_size_gb)} GB + ${fmtInt(v.data_disk_count)}×</td>
+      <td><span class="state-pill ${stateClass(v.power_state)}">${esc(v.power_state || '?')}</span></td>
+      <td class="num">${fmtNum(v.cpu_p95_pct, 1)}%</td>
+      <td class="num">${fmtNum(v.cpu_peak_pct, 1)}%</td>
+      <td class="num">${fmtMem(v.avail_mem_avg_bytes)}</td>
+      <td class="num">${fmtBytes(v.network_in_bytes)}</td>
+      <td class="num">${fmtBytes(v.network_out_bytes)}</td>
+      <td>${signalBadge(v.cost_signal_category, v.cost_signal_reason)}</td>
+    </tr>`).join('')}</tbody>`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// SPARKLINE SVG
+// ══════════════════════════════════════════════════════════════
+function sparkSVG(series, color) {
+  const vals = (series || []).map(p => p.value).filter(v => v != null);
+  if (vals.length < 2) return '<svg viewBox="0 0 100 36"></svg>';
+  const max = Math.max(...vals) || 1;
+  const min = Math.min(...vals);
+  const range = max - min || 1;
+  const w = 100, h = 36, pad = 2;
+  const points = vals.map((v, i) => {
+    const x = (i / (vals.length - 1)) * w;
+    const y = pad + ((1 - (v - min) / range) * (h - pad * 2));
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const polyline = points.join(' ');
+  const areaPoints = `0,${h} ${polyline} ${w},${h}`;
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polygon points="${areaPoints}" fill="${color}" opacity="0.12"/><polyline points="${polyline}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// VM CARDS
+// ══════════════════════════════════════════════════════════════
+function buildPortalLink(vm) {
+  const sub = vm.subscription_id;
+  const rg  = vm.resource_group;
+  const name = vm.vm_name;
+  if (!sub || !rg || !name) return '';
+  const rid = `/subscriptions/${encodeURIComponent(sub)}/resourceGroups/${encodeURIComponent(rg)}/providers/Microsoft.Compute/virtualMachines/${encodeURIComponent(name)}`;
+  return `https://portal.azure.com/#resource${rid}/overview`;
+}
+
+function renderVmCards() {
+  const grid      = document.getElementById('vmGrid');
+  const summaryEl = document.getElementById('cardsSummary');
+  if (!AGG.length) {
+    grid.innerHTML = '<div class="no-metrics">No VMs match the current filters.</div>';
+    if (summaryEl) summaryEl.textContent = 'No data';
+    return;
+  }
+
+  const shown = Math.min(AGG.length, 100);
+  if (summaryEl) summaryEl.textContent = `${shown} of ${AGG.length} VM${AGG.length !== 1 ? 's' : ''} shown`;
+
+  grid.innerHTML = AGG.slice(0, 100).map(v => {
+    const cpu    = v.cpu_p95_pct;
+    const cpuW   = Math.max(0, Math.min(100, cpu || 0));
+    const portalUrl = buildPortalLink(v);
+    const disksLabel = [
+      v.os_disk_size_gb != null ? `OS ${v.os_disk_size_gb} GB` : null,
+      v.data_disk_count ? `+ ${v.data_disk_count} data disk(s)` : null,
+    ].filter(Boolean).join(' ');
+
+    return `<div class="vm-card">
+      <div class="vm-head">
+        <div>
+          <div class="vm-title">${esc(v.vm_name)}</div>
+          <div class="vm-sub">${esc(v.resource_group)} · ${esc(v.location)} · ${esc(v.subscription_name || v.subscription_id)}</div>
+        </div>
+        ${signalBadge(v.cost_signal_category, v.cost_signal_reason)}
+      </div>
+
+      <div class="meta-row">
+        <span class="state-pill ${stateClass(v.power_state)}">${esc(v.power_state || '?')}</span>
+        <span class="meta-pill">${esc(v.os_type || 'Unknown OS')}</span>
+        <span class="meta-pill">${esc(v.vm_size || 'Unknown size')}</span>
+        ${v.priority ? `<span class="meta-pill">${esc(v.priority)}</span>` : ''}
+        ${disksLabel ? `<span class="meta-pill">${esc(disksLabel)}</span>` : ''}
+        ${v.license_type ? `<span class="meta-pill">AHB: ${esc(v.license_type)}</span>` : ''}
+      </div>
+
+      ${v.power_state !== 'deallocated' ? `
+      <div class="metric-row">
+        <div class="metric-label">CPU p95</div>
+        <div class="metric-track"><div class="metric-fill fill-${pctCls(cpu)}" style="width:${cpuW}%"></div></div>
+        <div class="metric-value">${fmtNum(cpu, 1)}%</div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-label">Avail Mem</div>
+        <div class="metric-track" style="background:transparent"></div>
+        <div class="metric-value" style="min-width:80px;text-align:right">${fmtMem(v.avail_mem_avg_bytes)}</div>
+      </div>
+      ` : `<div style="height:28px;display:flex;align-items:center;color:var(--text-muted);font-size:12px">No metrics — VM is deallocated</div>`}
+
+      <div class="sparkline-area">
+        <div class="spark-box">
+          <div class="spark-title">CPU % trend</div>
+          ${sparkSVG(v.cpu_series, '#34d399')}
+        </div>
+        <div class="spark-box">
+          <div class="spark-title">Network In trend</div>
+          ${sparkSVG(v.net_in_series, '#0078d4')}
+        </div>
+      </div>
+
+      <div class="vm-note">${esc(nvl(v.cost_signal_reason, 'No recommendation.'))}</div>
+
+      ${portalUrl ? `<a class="portal-link" href="${portalUrl}" target="_blank" rel="noopener">↗ Open in Azure Portal</a>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════
+// SECTION TOGGLE
+// ══════════════════════════════════════════════════════════════
+function toggleSection(headerEl) {
+  headerEl.closest('.env-section').classList.toggle('collapsed');
+}
+
+// ══════════════════════════════════════════════════════════════
+// UPLOAD STATUS
+// ══════════════════════════════════════════════════════════════
+function updateUploadStatus() {
+  const el   = document.getElementById('upload-status');
+  const zone = document.getElementById('upload-zone');
+  const parts = [];
+  if (LOADED_FILES.summary)    parts.push(`✓ summary: ${LOADED_FILES.summary}`);
+  if (LOADED_FILES.timeseries) parts.push(`✓ timeseries: ${LOADED_FILES.timeseries}`);
+  if (el) el.textContent = parts.join('  ·  ');
+  if (zone) {
+    const hint = zone.querySelector('.hint');
+    if (hint) {
+      if (LOADED_FILES.summary && LOADED_FILES.timeseries) hint.textContent = 'Both files loaded ✓';
+      else if (LOADED_FILES.summary)    hint.textContent = 'Summary loaded — drop timeseries for sparklines';
+      else if (LOADED_FILES.timeseries) hint.textContent = 'Timeseries loaded — drop summary for full view';
+      else hint.textContent = 'summary · timeseries · or both at once';
+    }
+    zone.style.borderColor = (LOADED_FILES.summary || LOADED_FILES.timeseries) ? 'var(--green)' : '';
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// FILE TYPE DETECTION
+// ══════════════════════════════════════════════════════════════
+function isSummaryFile(name)    { return /virtual_machines_summary/i.test(name); }
+function isTimeseriesFile(name) { return /virtual_machines_timeseries/i.test(name); }
+
+function tryShowDashboard() {
+  if (!SUMMARY_ROWS.length && !TS_ROWS.length) return;
+  FILTER_OPTIONS = extractFilterOptions(SUMMARY_ROWS, TS_ROWS);
+  ACTIVE_FILTERS = {
+    date_from:            FILTER_OPTIONS.date_range?.min || '',
+    date_to:              FILTER_OPTIONS.date_range?.max || '',
+    subscription:         new Set(),
+    location:             new Set(),
+    os_type:              new Set(),
+    power_state:          new Set(),
+    cost_signal_category: new Set(),
+    priority:             new Set(),
+  };
+  showDashboard();
+}
+
+function showDashboard() {
+  document.getElementById('uploadScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'block';
+
+  const fn = LOADED_FILES.summary || LOADED_FILES.timeseries || '';
+  let customer = '';
+  if (fn) { const m = fn.match(/^([A-Z0-9]+)_virtual_machines/i); if (m) customer = m[1].toUpperCase(); }
+  document.getElementById('dashTitle').textContent = (customer ? customer + ' — ' : '') + 'Virtual Machines Dashboard';
+
+  const metaParts = [];
+  if (LOADED_FILES.summary)    metaParts.push('✓ summary');
+  if (LOADED_FILES.timeseries) metaParts.push('✓ timeseries');
+  const dr = FILTER_OPTIONS.date_range;
+  if (dr?.min && dr?.max) metaParts.push(`${dr.min} → ${dr.max}`);
+  document.getElementById('dashMeta').textContent = metaParts.join('  ·  ');
+
+  buildFilterBar();
+  applyFilters();
+}
+
+// ══════════════════════════════════════════════════════════════
+// FILE HANDLING
+// ══════════════════════════════════════════════════════════════
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const rows = parseCSV(e.target.result || '');
+      if (!rows.length) { alert('No data rows found in CSV: ' + file.name); return; }
+
+      if (isSummaryFile(file.name)) {
+        SUMMARY_ROWS = rows;
+        LOADED_FILES.summary = file.name;
+      } else if (isTimeseriesFile(file.name)) {
+        TS_ROWS = rows;
+        LOADED_FILES.timeseries = file.name;
+      } else {
+        // Auto-detect by column names
+        const cols = Object.keys(rows[0] || {});
+        if (cols.includes('cost_signal_category') && !cols.includes('timestamp')) {
+          SUMMARY_ROWS = rows; LOADED_FILES.summary = file.name;
+        } else if (cols.includes('cpu_percentage') && cols.includes('vm_id') && !cols.includes('cost_signal_category')) {
+          TS_ROWS = rows; LOADED_FILES.timeseries = file.name;
+        } else {
+          alert('Cannot determine file type. Expected summary or timeseries file from get_virtualmachines.py.');
+          return;
+        }
+      }
+
+      updateUploadStatus();
+      tryShowDashboard();
+    } catch (err) {
+      alert('Error parsing CSV: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+const uploadZone = document.getElementById('upload-zone');
+const fileInput  = document.getElementById('file-input');
+uploadZone.addEventListener('click', () => fileInput.click());
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault(); uploadZone.classList.remove('dragover');
+  [...e.dataTransfer.files].forEach(f => handleFile(f));
+});
+fileInput.addEventListener('change', e => {
+  const files = [...e.target.files].filter(f => {
+    if (!/virtual_machines/i.test(f.name))
+      return confirm(`"${f.name}" doesn't look like a Virtual Machines export.\nExpected a filename containing "virtual_machines".\n\nLoad it anyway?`);
+    return true;
+  });
+  files.forEach(f => handleFile(f));
+  fileInput.value = '';
+});
+
+document.getElementById('reloadBtn').addEventListener('click', () => {
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('uploadScreen').style.display = 'flex';
+  SUMMARY_ROWS = []; TS_ROWS = []; AGG = []; FILTER_OPTIONS = {}; ACTIVE_FILTERS = {};
+  LOADED_FILES = { summary: null, timeseries: null };
+  uploadZone.style.borderColor = '';
+  const hint = uploadZone.querySelector('.hint');
+  if (hint) hint.textContent = 'summary · timeseries · or both at once';
+  document.getElementById('upload-status').textContent = '';
+  fileInput.value = '';
+});
+
+// ══════════════════════════════════════════════════════════════
+// THEME TOGGLE
+// ══════════════════════════════════════════════════════════════
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('dco-theme', next);
+}
+document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+document.getElementById('themeToggleUpload').addEventListener('click', toggleTheme);
+
+// ══════════════════════════════════════════════════════════════
+// STORAGE-BASED FILE LOADING
+// ══════════════════════════════════════════════════════════════
+function ensureStorageSpinner(){
+  let spinner=document.getElementById('storageSpinner');
+  if(spinner)return spinner;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  spinner=document.createElement('div');
+  spinner.id='storageSpinner';
+  spinner.innerHTML='<div class="spinner-ring"></div><div class="spinner-label">Loading data from Azure Storage...<div class="spinner-step" id="spinnerStep">Connecting...</div></div>';
+  uploadScreen.insertBefore(spinner, uploadScreen.firstElementChild ? uploadScreen.firstElementChild.nextSibling : null);
+  return spinner;
+}
+
+function setStorageSpinner(stepText){
+  const spinner=ensureStorageSpinner();
+  const stepEl=document.getElementById('spinnerStep');
+  if(stepEl&&stepText)stepEl.textContent=stepText;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      if(el.dataset.prevDisplay===undefined)el.dataset.prevDisplay=el.style.display||'';
+      el.style.display='none';
+    });
+  }
+
+  spinner.style.display='flex';
+}
+
+function hideStorageSpinner(){
+  const spinner=document.getElementById('storageSpinner');
+  if(spinner)spinner.style.display='none';
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      const prev=(el.dataset.prevDisplay!==undefined)?el.dataset.prevDisplay:'';
+      el.style.display=prev;
+      delete el.dataset.prevDisplay;
+    });
+  }
+}
+window.onFilesLoaded = function(loadedFiles) {
+  const organized = organizeLoadedFiles(loadedFiles);
+  
+  if (organized.summaryContent) {
+    const summaryFile = new File([organized.summaryContent], 'summary.csv', { type: 'text/csv' });
+    handleFile(summaryFile);
+  }
+  
+  if (organized.timeseriesContent) {
+    const timeseriesFile = new File([organized.timeseriesContent], 'timeseries.csv', { type: 'text/csv' });
+    handleFile(timeseriesFile);
+  }
+  
+  hideFileUploadUI();
+};
+
+async function autoLoadFromStorage() {
+  const dashboardId = 'virtualMachines';
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+
+  if (hasConnection) {
+    setStorageSpinner('Connecting...');
+  }
+
+  const loaded = await initStorageFileLoader(dashboardId, (step) => {
+    setStorageSpinner(step || 'Loading...');
+  });
+
+  if (!loaded) {
+    hideStorageSpinner();
+    showFileUploadUI();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+
+// ══════════════════════════════════════════════════════════════
+// SIGNAL TOOLTIP
+// ══════════════════════════════════════════════════════════════
+(function () {
+  const tip = document.getElementById('signalTooltip');
+  let activeEl = null;
+
+  document.addEventListener('mouseover', e => {
+    const el = e.target.closest('.signal[data-reason]');
+    if (!el || el === activeEl) return;
+    activeEl = el;
+    const cat = el.textContent.trim();
+    tip.innerHTML = `<div class="tip-label">${esc(cat)}</div>${esc(el.dataset.reason)}`;
+    tip.setAttribute('aria-hidden', 'false');
+    tip.classList.add('visible');
+    positionTip(e);
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (tip.classList.contains('visible')) positionTip(e);
+  });
+
+  document.addEventListener('mouseout', e => {
+    if (!e.target.closest('.signal[data-reason]')) return;
+    activeEl = null;
+    tip.classList.remove('visible');
+    tip.setAttribute('aria-hidden', 'true');
+  });
+
+  function positionTip(e) {
+    const pad = 14;
+    let x = e.clientX + pad, y = e.clientY + pad;
+    const tw = tip.offsetWidth || 320, th = tip.offsetHeight || 60;
+    if (x + tw > window.innerWidth  - pad) x = e.clientX - tw - pad;
+    if (y + th > window.innerHeight - pad) y = e.clientY - th - pad;
+    tip.style.left = x + 'px';
+    tip.style.top  = y + 'px';
+  }
+}());
+
+// ══════════════════════════════════════════════════════════════
+// DEMO DATA
+// ══════════════════════════════════════════════════════════════
+function loadDemo() {
+  const summaryHdr = 'tenant_id;subscription_id;subscription_name;resource_group;vm_name;vm_id;location;vm_size;os_type;os_disk_sku;os_disk_size_gb;data_disk_count;data_disk_total_size_gb;nic_count;availability_zone;availability_set;proximity_placement_group;ultra_ssd_enabled;encryption_at_host;secure_boot_enabled;vtpm_enabled;license_type;priority;eviction_policy;identity_type;extensions;power_state;provisioning_state;tags;cost_signal_category;cost_signal_reason;observed_sample_count;cpu_avg_pct_window;cpu_p95_pct_window;cpu_peak_pct_window;network_in_total_bytes_window;network_out_total_bytes_window;disk_read_total_bytes_window;disk_write_total_bytes_window;available_memory_avg_bytes_window;available_memory_min_bytes_window';
+  const tsHdr = 'vm_id;timestamp;cpu_percentage;network_in_bytes;network_out_bytes;disk_read_bytes;disk_write_bytes;available_memory_bytes';
+
+  const summaryLines = [summaryHdr];
+  const tsLines      = [tsHdr];
+  const now = Date.now();
+  const N   = 24;
+
+  const vms = [
+    { sub: '1111', subName: 'prod-sub', rg: 'rg-prod', name: 'vm-prod-api01', size: 'Standard_D4s_v5', os: 'Linux', diskSku: 'Premium_LRS', diskGb: 128, dCount: 2, dGb: 512, state: 'running', prio: '', cpuAvg: 62, cpuP95: 78, cpuPeak: 91, netIn: 2e9, netOut: 1.2e9, memAvg: 3e9, signal: 'scale-up-review', reason: 'High peak CPU observed. Review whether the current VM size is adequate.', loc: 'westeurope' },
+    { sub: '1111', subName: 'prod-sub', rg: 'rg-prod', name: 'vm-prod-db01',  size: 'Standard_E8s_v5', os: 'Windows', diskSku: 'Premium_LRS', diskGb: 256, dCount: 4, dGb: 2048, state: 'running', prio: '', cpuAvg: 11, cpuP95: 14, cpuPeak: 26, netIn: 1.5e9, netOut: 0.9e9, memAvg: 18e9, signal: 'oversized-premium', reason: 'Premium VM size with very low sustained and peak CPU utilisation. Consider downsizing or using a general-purpose SKU.', loc: 'westeurope' },
+    { sub: '1111', subName: 'prod-sub', rg: 'rg-prod', name: 'vm-prod-web02', size: 'Standard_B2s',    os: 'Linux', diskSku: 'StandardSSD_LRS', diskGb: 64, dCount: 0, dGb: 0, state: 'running', prio: '', cpuAvg: 7, cpuP95: 9, cpuPeak: 21, netIn: 0.5e9, netOut: 0.3e9, memAvg: 0.8e9, signal: 'low-utilisation', reason: 'Consistently low CPU across the observation window. Candidate for downsizing or shutdown scheduling.', loc: 'westeurope' },
+    { sub: '2222', subName: 'nonprod-sub', rg: 'rg-np', name: 'vm-dev-jump01', size: 'Standard_D2s_v3', os: 'Windows', diskSku: 'Standard_LRS', diskGb: 128, dCount: 0, dGb: 0, state: 'stopped', prio: '', cpuAvg: 0, cpuP95: 0, cpuPeak: 0, netIn: 0, netOut: 0, memAvg: 0, signal: 'stopped-billed', reason: 'VM is stopped but NOT deallocated. Full compute charges still apply. Deallocate to stop billing.', loc: 'northeurope' },
+    { sub: '2222', subName: 'nonprod-sub', rg: 'rg-np', name: 'vm-dev-test02', size: 'Standard_D4s_v3', os: 'Linux', diskSku: 'StandardSSD_LRS', diskGb: 64, dCount: 1, dGb: 128, state: 'deallocated', prio: '', cpuAvg: 0, cpuP95: 0, cpuPeak: 0, netIn: 0, netOut: 0, memAvg: 0, signal: 'deallocated', reason: 'VM is deallocated. Compute charges have stopped but managed disk costs continue.', loc: 'northeurope' },
+    { sub: '1111', subName: 'prod-sub', rg: 'rg-spot', name: 'vm-spot-batch01', size: 'Standard_F8s_v2', os: 'Linux', diskSku: 'StandardSSD_LRS', diskGb: 64, dCount: 0, dGb: 0, state: 'running', prio: 'Spot', cpuAvg: 18, cpuP95: 23, cpuPeak: 44, netIn: 0.3e9, netOut: 0.2e9, memAvg: 4e9, signal: 'scale-down-candidate', reason: 'CPU p95 below 25 % with moderate peaks. Evaluate a smaller VM size for cost savings.', loc: 'westeurope' },
+  ];
+
+  for (const v of vms) {
+    const vmId = `/subscriptions/${v.sub}/resourceGroups/${v.rg}/providers/Microsoft.Compute/virtualMachines/${v.name}`;
+    summaryLines.push([
+      '', v.sub, v.subName, v.rg, v.name, vmId, v.loc, v.size, v.os,
+      v.diskSku, v.diskGb, v.dCount, v.dGb || '',
+      1, '', '', '', 'False', 'False', 'False', 'False',
+      v.os === 'Windows' ? 'Windows_Server' : '', v.prio, '', 'SystemAssigned',
+      'AzureMonitorAgent, GuestHealthExtension',
+      v.state, 'Succeeded', 'env=demo',
+      v.signal, v.reason,
+      v.state === 'deallocated' ? 0 : N,
+      v.cpuAvg.toFixed(2), v.cpuP95.toFixed(2), v.cpuPeak.toFixed(2),
+      v.netIn.toFixed(0), v.netOut.toFixed(0),
+      (v.diskGb * 500000).toFixed(0), (v.diskGb * 300000).toFixed(0),
+      v.memAvg.toFixed(0), (v.memAvg * 0.8).toFixed(0),
+    ].join(';'));
+
+    if (v.state !== 'deallocated') {
+      for (let i = 0; i < N; i++) {
+        const t   = new Date(now - (N - i) * 3600000).toISOString().replace(/\.\d+Z/, 'Z');
+        const cpu = Math.max(0, v.cpuAvg + (Math.random() - 0.5) * (v.cpuPeak * 0.35));
+        const nin = Math.max(0, v.netIn  / N + (Math.random() - 0.5) * (v.netIn  / N * 0.4));
+        const nout= Math.max(0, v.netOut / N + (Math.random() - 0.5) * (v.netOut / N * 0.4));
+        const dr  = Math.max(0, v.diskGb * 500000 / N * (0.7 + Math.random() * 0.6));
+        const dw  = Math.max(0, v.diskGb * 300000 / N * (0.7 + Math.random() * 0.6));
+        const mem = Math.max(0, v.memAvg + (Math.random() - 0.5) * (v.memAvg * 0.1));
+        tsLines.push([vmId, t, cpu.toFixed(2), nin.toFixed(0), nout.toFixed(0), dr.toFixed(0), dw.toFixed(0), mem.toFixed(0)].join(';'));
+      }
+    }
+  }
+
+  SUMMARY_ROWS = parseCSV(summaryLines.join('\n'));
+  TS_ROWS      = parseCSV(tsLines.join('\n'));
+  LOADED_FILES = { summary: 'DEMO_virtual_machines_summary.csv', timeseries: 'DEMO_virtual_machines_timeseries.csv' };
+  FILTER_OPTIONS = extractFilterOptions(SUMMARY_ROWS, TS_ROWS);
+  ACTIVE_FILTERS = {
+    date_from: FILTER_OPTIONS.date_range?.min || '',
+    date_to:   FILTER_OPTIONS.date_range?.max || '',
+    subscription: new Set(), location: new Set(), os_type: new Set(),
+    power_state: new Set(), cost_signal_category: new Set(), priority: new Set(),
+  };
+  AGG = aggregate(SUMMARY_ROWS, TS_ROWS);
+  showDashboard();
+}
+</script>
+<script src="../bin/table-sort.js"></script>
+</body>
+</html>
+
+

@@ -1,0 +1,169 @@
+/* ── Event Hub Dashboard: local overrides only ── */
+#dashboardScreen { display: none; }
+
+/* TU capacity bar */
+.tu-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.tu-bar-track {
+  flex: 1;
+  height: 6px;
+  background: var(--surface-3);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.tu-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+}
+.tu-bar-label {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* Status badge */
+.eh-status {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-xs);
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.eh-status--active  { background: var(--green-dim);  color: var(--green); }
+.eh-status--unknown { background: rgba(136,146,168,.1); color: var(--text-dim); }
+.eh-status--disabled{ background: var(--red-dim);    color: var(--red); }
+
+/* Auto-inflate pill */
+.inflate-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 3px 9px;
+  border-radius: var(--radius-xs);
+  font-weight: 600;
+}
+.inflate-on  { background: var(--cyan-dim);   color: var(--cyan); }
+.inflate-off { background: rgba(90,100,128,.1); color: var(--text-muted); }
+
+/* EH table in namespace sections */
+.eh-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 12px;
+}
+.eh-table th {
+  text-align: left;
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.eh-table th.num { text-align: right; }
+.eh-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.eh-table td.label { font-family: var(--font-body); font-size: 12px; }
+.eh-table td.num   { text-align: right; }
+.eh-table tr:hover td { background: var(--surface-2); }
+.eh-table tr:last-child td { border-bottom: none; }
+
+/* Namespace info row */
+.ns-info-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.ns-info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ns-info-item .key {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.ns-info-item .val {
+  font-size: 13px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+/* Throttle warning */
+.throttle-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--red-dim);
+  color: var(--red);
+  border-radius: var(--radius-xs);
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.rec-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: var(--radius-xs);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+.rec-badge--high { background: var(--red-dim); color: var(--red); }
+.rec-badge--medium { background: var(--orange-dim); color: var(--orange); }
+.rec-badge--low { background: rgba(118,208,119,.15); color: var(--green); }
+.rec-badge[data-reason] { cursor: help; }
+
+/* Risk hover tooltip */
+.rec-tip {
+  position: fixed;
+  z-index: 9999;
+  max-width: 340px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0,0,0,.28);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .1s;
+}
+.rec-tip.visible { opacity: 1; }
+.rec-tip .tip-label {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 5px;
+  color: var(--text-dim);
+}
+

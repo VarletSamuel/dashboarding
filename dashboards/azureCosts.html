@@ -1,0 +1,1417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Azure Cost Dashboard</title>
+<link rel="icon" type="image/png" href="../bin/delaware-dee-rgb.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../bin/dashboard-core.css">
+<link rel="stylesheet" href="../bin/dashboard-azureCosts.css">
+<script src="../bin/storage-loader.js"></script>
+<script src="../bin/filter-bar-helper.js"></script>
+<script>
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+
+</head>
+<body class="ambient-glow">
+
+<!-- UPLOAD -->
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+  <h1>Azure Cost Dashboard</h1>
+  <p>Upload the <strong>daily_costs_by_resource</strong> CSV exported by <code>get_monthly_costs.py</code>. The file is parsed entirely in your browser — nothing is uploaded to any server.</p>
+
+  <!-- Spinner shown while fetching from storage -->
+  <div id="storageSpinner">
+    <div class="spinner-ring"></div>
+    <div class="spinner-label">
+      Loading data from Azure Storage…
+      <div class="spinner-step" id="spinnerStep">Connecting…</div>
+    </div>
+  </div>
+
+  <div id="uploadControls">
+  <div class="drop-zone" id="dropZone">
+    <div class="icon">📊</div>
+    <div class="label">Drop one or more CSV files here</div>
+    <div class="hint">or click to browse (multiple files supported)</div>
+  </div>
+  <input type="file" id="fileInput" accept=".csv" multiple
+         title="Expected files: *_daily_costs_by_resource_*.csv">
+  <div id="errorMsg"></div>
+  <div id="loadingMsg">⏳ Parsing and aggregating data...</div>
+  <div style="margin-top:8px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+    <button id="demoBtn" class="btn btn--ghost">Load Demo Data</button>
+  </div>
+  </div>
+</div>
+
+<!-- FX RATE HISTORY MODAL -->
+<div id="fxModal" class="fx-modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="fxModalTitle">
+  <div class="fx-modal">
+    <div class="fx-modal-header">
+      <span id="fxModalTitle">💱 USD → EUR — past 30 days</span>
+      <button class="fx-modal-close" id="fxModalClose" aria-label="Close">✕</button>
+    </div>
+    <div id="fxChartWrap"><div class="fx-modal-loading">Loading…</div></div>
+  </div>
+</div>
+
+<!-- DASHBOARD -->
+<div id="dashboardScreen">
+  <div class="topbar">
+    <h1><img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle"><span id="dashTitle">Azure Cost Dashboard</span></h1>
+    <div style="display:flex;align-items:center;gap:8px">
+      <button class="meta fx-rate-btn" id="fxRate" title="Click to see 30-day USD → EUR history"></button>
+      <span class="meta" style="opacity:0.35">|</span>
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+      <div class="export-wrap" id="exportWrap">
+        <button class="export-btn" id="exportBtn" title="Export data">⬇ Export ▾</button>
+        <div class="export-dropdown" id="exportDropdown">
+          <button id="exportExcel">📊 &nbsp;Export to Excel (.xlsx)</button>
+        </div>
+      </div>
+      <button class="topbar-btn" id="reloadBtn">↩ Load another CSV</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+
+  <!-- FILTER BAR -->
+  <div class="filter-bar" id="filterBar"></div>
+
+  <div class="kpi-row" id="kpis"></div>
+
+  <!-- ── Section: Daily Cost Trend ── -->
+  <div class="env-section" id="sect-daily">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>Daily Cost Trend</h2>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full"><div class="card"><div class="chart-wrap"><canvas id="chartDaily"></canvas></div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Section: Cost Breakdown by Resource Type ── -->
+  <div class="env-section" id="sect-breakdown">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>Cost Breakdown by Resource Type</h2>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-2">
+          <div class="card"><h2>By Resource Type</h2><div class="chart-wrap"><canvas id="chartTypes"></canvas></div></div>
+          <div class="card"><h2>Month-over-Month</h2><div class="chart-wrap"><canvas id="chartMom"></canvas></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Section: Cost by Subscription ── -->
+  <div class="env-section" id="sect-subs">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>Cost by Subscription</h2>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-2">
+          <div class="card"><h2>Total per Subscription</h2><div class="chart-wrap"><canvas id="chartSubs"></canvas></div></div>
+          <div class="card"><h2>Daily Trend by Subscription</h2><div class="tab-bar" id="subTabs"></div><div class="chart-wrap"><canvas id="chartSubTrend"></canvas></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Section: Top 30 Most Expensive Resources ── -->
+  <div class="env-section" id="sect-resources">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>Top 30 Most Expensive Resources</h2>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full"><div class="card"><div style="overflow-x:auto"><table class="cost-table" id="topResourcesTable"></table></div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Section: Month-over-Month Comparison ── -->
+  <div class="env-section" id="sect-mom">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>Month-over-Month Cost Comparison</h2>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full"><div class="card"><div style="overflow-x:auto"><table class="cost-table" id="momTable"></table></div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Section: Cost Forecast (new) ── -->
+  <div class="env-section" id="sect-forecast">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>Cost Forecast</h2>
+      <span class="env-summary" id="forecastSummary">Linear trend · 90-day projection · 80% confidence interval</span>
+    </div>
+    <div class="env-body">
+      <div class="kpi-row" id="forecastKpis"></div>
+      <div class="dashboard" style="padding:0;margin-top:16px">
+        <div class="row row-full">
+          <div class="card">
+            <div class="forecast-disclaimer">⚠ This forecast uses a linear regression on fully-closed historical days — the most recent (still-open) day is excluded from training. It assumes the current spend trend continues and does not account for seasonality, committed discounts or one-off events. Use as directional guidance only.</div>
+            <div class="forecast-controls">
+              <div class="fc-ctrl">
+                <label>Look-back window</label>
+                <div class="fc-slider-row">
+                  <input type="range" id="sliderLookback" min="14" max="365" step="1" value="90">
+                  <span class="fc-val" id="valLookback">90 days</span>
+                </div>
+              </div>
+              <div class="fc-ctrl">
+                <label>Confidence interval</label>
+                <div class="fc-slider-row">
+                  <input type="range" id="sliderCI" min="50" max="99" step="1" value="80">
+                  <span class="fc-val" id="valCI">80%</span>
+                </div>
+              </div>
+            </div>
+            <div class="chart-wrap" style="height:320px"><canvas id="chartForecast"></canvas></div>
+          </div>
+        </div>
+        <div class="row row-full">
+          <div class="card">
+            <h2>Monthly Projection Breakdown</h2>
+            <div style="overflow-x:auto"><table class="cost-table" id="forecastTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ===========================================================================
+// GLOBALS
+// ===========================================================================
+const COLORS=['#4f8cff','#22d3ab','#f59e42','#e0547e','#a78bfa','#38bdf8','#f472b6','#facc15','#34d399','#fb923c','#818cf8','#e879f9','#22d3ee','#a3e635','#f87171','#c084fc','#2dd4bf','#fbbf24','#64748b','#94a3b8'];
+let chartInstances=[];
+let DATA=null;
+let ALL_RECORDS=[];    // raw parsed records (never changes after load)
+let FILTER_OPTIONS={}; // {date_range: {min, max}, subscription: Set, resource_type: Set, resource_group: Set}
+let ACTIVE_FILTERS={}; // {date_from: '', date_to: '', subscription: Set, resource_type: Set, resource_group: Set}
+
+const EUR=v=>v.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';
+function shortType(rt){
+  // Return "provider/type" (e.g. "microsoft.sql/servers") — the two segments
+  // that follow /providers/ in a resource ID. For types already in that format
+  // (as stored in the resource_type CSV column) this is just the value itself.
+  if(!rt)return rt;
+  const p=rt.split('/');
+  // If the value came straight from the resource_type column it already looks
+  // like "microsoft.sql/servers" — return it as-is.
+  if(p.length===2)return rt;
+  // If a full resource ID was passed, extract the two segments after /providers/
+  const pi=p.findIndex(s=>s.toLowerCase()==='providers');
+  if(pi>=0&&pi+2<p.length)return p[pi+1]+'/'+p[pi+2];
+  // Fallback: return last two segments, or the whole string if only one segment
+  return p.length>1?p[p.length-2]+'/'+p[p.length-1]:rt;
+}
+
+// ===========================================================================
+// CSV PARSING
+// ===========================================================================
+function parseCSV(text){
+  const lines=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n');
+  if(lines.length<2)throw new Error('CSV file appears empty');
+  if(lines[0].charCodeAt(0)===0xFEFF)lines[0]=lines[0].slice(1);
+  const header=lines[0].split(';').map(h=>h.trim().toLowerCase());
+  const idx={
+    subId:header.indexOf('subscription_id'),subName:header.indexOf('subscription_name'),
+    date:header.indexOf('date'),resId:header.indexOf('resource_id'),
+    resName:header.indexOf('resource_name'),resType:header.indexOf('resource_type'),
+    resGrp:header.indexOf('resource_group'),cost:header.indexOf('cost'),
+    costUsd:header.indexOf('cost_usd'),cur:header.indexOf('currency')
+  };
+  if(idx.date===-1||idx.cost===-1)throw new Error('CSV must contain "date" and "cost" columns (semicolon-delimited).');
+  const records=[];
+  for(let i=1;i<lines.length;i++){
+    const line=lines[i].trim();if(!line)continue;
+    const c=line.split(';');
+    const dateRaw=(c[idx.date]||'').trim();
+    if(!dateRaw||!/^\d{8}$/.test(dateRaw))continue;
+    const cost=parseFloat((c[idx.cost]||'0').trim().replace(',','.'));
+    const costUsd=parseFloat((c[idx.costUsd]||'0').trim().replace(',','.'));
+    if(isNaN(cost))continue;
+    const resId=idx.resId>=0?(c[idx.resId]||'').trim():'';
+    const parts=resId.split('/');
+    let rg=idx.resGrp>=0?(c[idx.resGrp]||'').trim():'';
+    if(!rg)for(let j=0;j<parts.length;j++){if(parts[j].toLowerCase()==='resourcegroups'&&j+1<parts.length){rg=parts[j+1];break}}
+    records.push({
+      sub_id:idx.subId>=0?(c[idx.subId]||'').trim():'',
+      sub:idx.subName>=0?(c[idx.subName]||'').trim():'',
+      date:dateRaw.slice(0,4)+'-'+dateRaw.slice(4,6)+'-'+dateRaw.slice(6,8),
+      month:dateRaw.slice(0,6),
+      res_id:resId,
+      res_name:idx.resName>=0?(c[idx.resName]||'').trim():(parts[parts.length-1]||''),
+      res_type:idx.resType>=0?(c[idx.resType]||'').trim():'',
+      rg,
+      cost,cost_usd:isNaN(costUsd)?0:costUsd,
+      currency:idx.cur>=0?(c[idx.cur]||'').trim():''
+    });
+  }
+  if(!records.length)throw new Error('No valid data rows found.');
+  return records;
+}
+
+// ===========================================================================
+// EXTRACT FILTER OPTIONS
+// ===========================================================================
+function extractFilterOptions(records){
+  const subs=new Set(),types=new Set(),rgs=new Set();
+  let minDate='9999-99-99',maxDate='0000-00-00';
+  for(const r of records){
+    if(r.sub)subs.add(r.sub); else if(r.sub_id)subs.add(r.sub_id);
+    types.add(r.res_type||'(none)');
+    if(r.rg)rgs.add(r.rg);
+    if(r.date<minDate)minDate=r.date;
+    if(r.date>maxDate)maxDate=r.date;
+  }
+  return{
+    date_range: {min:minDate,max:maxDate},
+    subscription:[...subs].sort(),
+    resource_type:[...types].sort(),
+    resource_group:[...rgs].sort()
+  };
+}
+
+// ===========================================================================
+// FILTER + RE-AGGREGATE
+// ===========================================================================
+function getFilteredRecords(){
+  return ALL_RECORDS.filter(r=>{
+    const subKey=r.sub||r.sub_id||'';
+    if(ACTIVE_FILTERS.subscription.size&&!ACTIVE_FILTERS.subscription.has(subKey))return false;
+    if(ACTIVE_FILTERS.resource_type.size&&!ACTIVE_FILTERS.resource_type.has(r.res_type||'(none)'))return false;
+    if(ACTIVE_FILTERS.resource_group.size&&!ACTIVE_FILTERS.resource_group.has(r.rg))return false;
+    if(DATE_FILTER.from&&r.date<DATE_FILTER.from)return false;
+    if(DATE_FILTER.to&&r.date>DATE_FILTER.to)return false;
+    return true;
+  });
+}
+
+function applyFilters(){
+  const filtered=getFilteredRecords();
+  if(!filtered.length){DATA=null;return}
+  DATA=aggregate(filtered);
+  destroyCharts();
+  renderKPIs();renderDailyTrend();renderTypeBreakdown();renderMoM();renderSubChart();renderSubTabs();renderTopResources();renderMomTable();
+  initForecastSliders();
+  renderForecast();
+}
+
+// ===========================================================================
+// FILTER BAR UI
+// ===========================================================================
+const FILTER_DEFS=[
+  {key:'subscription',label:'Subscription',icon:'📋'},
+  {key:'resource_type',label:'Resource Type',icon:'⚙️'},
+  {key:'resource_group',label:'Resource Group',icon:'📁'}
+];
+
+function buildFilterBar(){
+  const bar=document.getElementById('filterBar');
+  bar.innerHTML='<span class="filter-label">Filters</span>';
+
+  // Date range picker
+  const dateRange=FILTER_OPTIONS.date_range;
+  if(dateRange&&dateRange.min&&dateRange.max){
+    const dateGroup=document.createElement('div');
+    dateGroup.className='filter-group filter-date-group';
+    dateGroup.dataset.key='date';
+    dateGroup.innerHTML=`
+      <div class="filter-btn filter-btn-static">
+        📅 Date
+        <span class="date-range-inline">
+          <input type="date" class="date-input" data-role="from" min="${dateRange.min}" max="${dateRange.max}" value="${ACTIVE_FILTERS.date_from||dateRange.min}">
+          <span class="date-sep">to</span>
+          <input type="date" class="date-input" data-role="to" min="${dateRange.min}" max="${dateRange.max}" value="${ACTIVE_FILTERS.date_to||dateRange.max}">
+        </span>
+      </div>`;
+    const fromInput=dateGroup.querySelector('input[data-role="from"]');
+    const toInput=dateGroup.querySelector('input[data-role="to"]');
+    fromInput.addEventListener('change',()=>onDateFilterChange(fromInput,toInput));
+    toInput.addEventListener('change',()=>onDateFilterChange(fromInput,toInput));
+    bar.appendChild(dateGroup);
+  }
+
+  FILTER_DEFS.forEach(def=>{
+    const options=FILTER_OPTIONS[def.key]||[];
+    const active=ACTIVE_FILTERS[def.key];
+    const group=document.createElement('div');
+    group.className='filter-group';
+    group.dataset.key=def.key;
+
+    const selectedCount=active.size;
+    const countLabel=selectedCount===0?'All':selectedCount===options.length?'All':`${selectedCount}/${options.length}`;
+
+    group.innerHTML=`
+      <button class="filter-btn">
+        ${def.icon} ${def.label} <span class="count">${countLabel}</span> <span class="arrow">▼</span>
+      </button>
+      <div class="filter-dropdown">
+        <div class="filter-actions">
+          <button data-action="all">Select All</button>
+          <button data-action="none">Select None</button>
+          <button data-action="invert">Invert</button>
+        </div>
+        <div class="filter-search"><input type="text" placeholder="Search..."></div>
+        <div class="filter-list"></div>
+      </div>`;
+
+    const list=group.querySelector('.filter-list');
+    const isAllSelected=active.size===0;
+
+    options.forEach(opt=>{
+      const checked=isAllSelected||active.has(opt);
+      const displayName=def.key==='resource_type'?shortType(opt):opt;
+      const item=document.createElement('div');
+      item.className='filter-item';
+      item.innerHTML=`<input type="checkbox" ${checked?'checked':''} value="${opt}"><label title="${opt}">${displayName}</label>`;
+      item.querySelector('input').addEventListener('change',()=>onFilterCheck(def.key));
+      item.querySelector('label').addEventListener('click',(e)=>{
+        e.preventDefault();
+        const cb=item.querySelector('input');
+        cb.checked=!cb.checked;
+        onFilterCheck(def.key);
+      });
+      list.appendChild(item);
+    });
+
+    // Toggle dropdown
+    group.querySelector('.filter-btn').addEventListener('click',(e)=>{
+      e.stopPropagation();
+      const wasOpen=group.classList.contains('open');
+      document.querySelectorAll('.filter-group').forEach(g=>g.classList.remove('open'));
+      if(!wasOpen)group.classList.add('open');
+    });
+
+    // Search
+    group.querySelector('.filter-search input').addEventListener('input',(e)=>{
+      const q=e.target.value.toLowerCase();
+      list.querySelectorAll('.filter-item').forEach(item=>{
+        const val=item.querySelector('input').value.toLowerCase();
+        item.style.display=val.includes(q)?'':'none';
+      });
+    });
+
+    // Actions
+    group.querySelectorAll('.filter-actions button').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        const action=btn.dataset.action;
+        const checkboxes=list.querySelectorAll('input[type=checkbox]');
+        if(action==='all')checkboxes.forEach(cb=>{if(cb.closest('.filter-item').style.display!=='none')cb.checked=true});
+        else if(action==='none')checkboxes.forEach(cb=>{if(cb.closest('.filter-item').style.display!=='none')cb.checked=false});
+        else if(action==='invert')checkboxes.forEach(cb=>{if(cb.closest('.filter-item').style.display!=='none')cb.checked=!cb.checked});
+        onFilterCheck(def.key);
+      });
+    });
+
+    bar.appendChild(group);
+  });
+
+  // Reset all button
+  const resetBtn=document.createElement('button');
+  resetBtn.className='filter-reset-all';
+  resetBtn.textContent='Reset All';
+  resetBtn.addEventListener('click',()=>{
+    FILTER_DEFS.forEach(def=>ACTIVE_FILTERS[def.key]=new Set());
+    ACTIVE_FILTERS.date_from='';
+    ACTIVE_FILTERS.date_to='';
+    buildFilterBar();
+    applyFilters();
+  });
+  bar.appendChild(resetBtn);
+
+  // Close dropdowns on outside click
+  document.addEventListener('click',()=>{
+    document.querySelectorAll('.filter-group').forEach(g=>g.classList.remove('open'));
+  });
+  bar.addEventListener('click',(e)=>e.stopPropagation());
+}
+
+function onFilterCheck(filterKey){
+  const group=document.querySelector(`.filter-group[data-key="${filterKey}"]`);
+  const checkboxes=group.querySelectorAll('.filter-list input[type=checkbox]');
+  const allOptions=FILTER_OPTIONS[filterKey]||[];
+
+  const selected=new Set();
+  checkboxes.forEach(cb=>{if(cb.checked)selected.add(cb.value)});
+
+  // If all selected or none selected → treat as "all" (empty set = no filter)
+  if(selected.size===allOptions.length||selected.size===0){
+    ACTIVE_FILTERS[filterKey]=new Set();
+  }else{
+    ACTIVE_FILTERS[filterKey]=selected;
+  }
+
+  // Update count badge
+  const countEl=group.querySelector('.count');
+  const active=ACTIVE_FILTERS[filterKey];
+  countEl.textContent=active.size===0?'All':`${active.size}/${allOptions.length}`;
+
+  applyFilters();
+}
+
+// ===========================================================================
+// AGGREGATION
+// ===========================================================================
+function aggregate(records){
+  const currency=records[0].currency||'EUR';
+  const monthSet=new Set();
+  let grandTotal=0,grandTotalUsd=0;
+  const dailyMap={},dailySubMap={},typeMap={},typeMonthMap={},resMap={},subMap={},subMonthMap={},rgMap={},rgMonthMap={},sub_rgMap={},subRgMonthMap={};
+
+  for(const r of records){
+    monthSet.add(r.month);grandTotal+=r.cost;grandTotalUsd+=r.cost_usd;
+    if(!dailyMap[r.date])dailyMap[r.date]={c:0,cu:0};
+    dailyMap[r.date].c+=r.cost;dailyMap[r.date].cu+=r.cost_usd;
+    const subKey=r.sub||r.sub_id||'(unknown)';
+    if(!dailySubMap[subKey])dailySubMap[subKey]={};
+    if(!dailySubMap[subKey][r.date])dailySubMap[subKey][r.date]=0;
+    dailySubMap[subKey][r.date]+=r.cost;
+    const rt=r.res_type||'(none)';
+    if(!typeMap[rt])typeMap[rt]={c:0,cu:0};
+    typeMap[rt].c+=r.cost;typeMap[rt].cu+=r.cost_usd;
+    if(!typeMonthMap[r.month])typeMonthMap[r.month]={};
+    if(!typeMonthMap[r.month][rt])typeMonthMap[r.month][rt]=0;
+    typeMonthMap[r.month][rt]+=r.cost;
+    const resKey=r.res_name+'|'+subKey;
+    if(!resMap[resKey])resMap[resKey]={rn:r.res_name,rt,rg:r.rg,sub:subKey,c:0,cu:0};
+    resMap[resKey].c+=r.cost;resMap[resKey].cu+=r.cost_usd;
+    if(!subMap[subKey])subMap[subKey]={c:0,cu:0};
+    subMap[subKey].c+=r.cost;subMap[subKey].cu+=r.cost_usd;
+    if(!subMonthMap[r.month])subMonthMap[r.month]={};
+    if(!subMonthMap[r.month][subKey])subMonthMap[r.month][subKey]=0;
+    subMonthMap[r.month][subKey]+=r.cost;
+    
+    // Resource group aggregation
+    const rgKey=r.rg||'(unassigned)';
+    const sub_rgKey=subKey+'|'+rgKey;
+    if(!rgMap[rgKey])rgMap[rgKey]={c:0,cu:0};
+    rgMap[rgKey].c+=r.cost;rgMap[rgKey].cu+=r.cost_usd;
+    if(!rgMonthMap[r.month])rgMonthMap[r.month]={};
+    if(!rgMonthMap[r.month][rgKey])rgMonthMap[r.month][rgKey]=0;
+    rgMonthMap[r.month][rgKey]+=r.cost;
+    if(!sub_rgMap[sub_rgKey])sub_rgMap[sub_rgKey]={sub:subKey,rg:rgKey,c:0,cu:0};
+    sub_rgMap[sub_rgKey].c+=r.cost;sub_rgMap[sub_rgKey].cu+=r.cost_usd;
+    if(!subRgMonthMap[r.month])subRgMonthMap[r.month]={};
+    if(!subRgMonthMap[r.month][sub_rgKey])subRgMonthMap[r.month][sub_rgKey]=0;
+    subRgMonthMap[r.month][sub_rgKey]+=r.cost;
+  }
+  const months=[...monthSet].sort();
+  const monthLabels=months.map(m=>m.slice(0,4)+'-'+m.slice(4,6));
+  const dates=Object.keys(dailyMap).sort();
+  const daily=dates.map(d=>({d,c:Math.round(dailyMap[d].c*100)/100,cu:Math.round(dailyMap[d].cu*100)/100}));
+  const daily_sub={};
+  for(const[sub,dateMap]of Object.entries(dailySubMap)){daily_sub[sub]=dates.map(d=>({d,c:Math.round((dateMap[d]||0)*100)/100}))}
+  const by_type=Object.entries(typeMap).map(([rt,v])=>({rt,c:Math.round(v.c*100)/100,cu:Math.round(v.cu*100)/100})).sort((a,b)=>b.c-a.c);
+  const topTypes=by_type.slice(0,15).map(x=>x.rt);
+  const type_mom={};
+  for(const rt of topTypes){type_mom[rt]=monthLabels.map((ml,i)=>({m:ml,c:Math.round((typeMonthMap[months[i]]?.[rt]||0)*100)/100}))}
+  const top_resources=Object.values(resMap).sort((a,b)=>b.c-a.c).slice(0,50).map(r=>({...r,c:Math.round(r.c*100)/100,cu:Math.round(r.cu*100)/100}));
+  const subs=Object.entries(subMap).map(([sub,v])=>({sub,c:Math.round(v.c*100)/100,cu:Math.round(v.cu*100)/100})).sort((a,b)=>b.c-a.c);
+  const sub_mom={};
+  for(const sub of subs.map(s=>s.sub)){sub_mom[sub]=monthLabels.map((ml,i)=>({m:ml,c:Math.round((subMonthMap[months[i]]?.[sub]||0)*100)/100}))}
+  
+  // Resource group aggregations
+  const sub_rg_list=Object.values(sub_rgMap).map(x=>({...x,c:Math.round(x.c*100)/100,cu:Math.round(x.cu*100)/100}));
+  const sub_rg_mom={};
+  for(const key of Object.keys(sub_rgMap)){
+    sub_rg_mom[key]=monthLabels.map((ml,i)=>({
+      m:ml,
+      c:Math.round((subRgMonthMap[months[i]]?.[key]||0)*100)/100
+    }));
+  }
+  
+  return{currency,grand_total:Math.round(grandTotal*100)/100,grand_total_usd:Math.round(grandTotalUsd*100)/100,months:monthLabels,daily,daily_sub,by_type,type_mom,top_resources,subs,sub_mom,sub_rg:sub_rg_list,sub_rg_mom,rgMap,rgMonthMap,date_from:dates[0],date_to:dates[dates.length-1]};
+}
+
+// ===========================================================================
+// FILE HANDLING
+// ===========================================================================
+const dropZone=document.getElementById('dropZone');
+const fileInput=document.getElementById('fileInput');
+const errorMsg=document.getElementById('errorMsg');
+const loadingMsg=document.getElementById('loadingMsg');
+dropZone.addEventListener('click',()=>fileInput.click());
+dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('drag-over')});
+dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('drag-over');if(e.dataTransfer.files.length)handleFiles(e.dataTransfer.files)});
+fileInput.addEventListener('change', () => {
+  if (!fileInput.files.length) return;
+  const files = [...fileInput.files].filter(f => {
+    if (!/daily_costs/i.test(f.name))
+      return confirm(`"${f.name}" doesn't look like a Daily Costs export.\nExpected a filename containing "daily_costs".\n\nLoad it anyway?`);
+    return true;
+  });
+  if (files.length) handleFiles(files);
+  fileInput.value = '';
+});
+document.getElementById('reloadBtn').addEventListener('click',()=>{
+  document.getElementById('dashboardScreen').style.display='none';
+  document.getElementById('uploadScreen').style.display='flex';
+  destroyCharts();ALL_RECORDS=[];DATA=null;FILTER_OPTIONS={};ACTIVE_FILTERS={};DATE_FILTER={from:'',to:''};
+  fileInput.value='';errorMsg.textContent='';
+});
+
+function handleFiles(fileList){
+  errorMsg.textContent='';loadingMsg.style.display='block';
+  const files=Array.from(fileList);
+  const csvFiles=files.filter(f=>f.name.toLowerCase().endsWith('.csv'));
+  if(!csvFiles.length){loadingMsg.style.display='none';errorMsg.textContent='❌ No CSV files found.';return;}
+  const readFile=f=>new Promise((resolve,reject)=>{
+    const r=new FileReader();
+    r.onload=e=>resolve(e.target.result);
+    r.onerror=()=>reject(new Error('Failed to read '+f.name));
+    r.readAsText(f,'utf-8');
+  });
+  Promise.all(csvFiles.map(readFile)).then(texts=>{
+    try{
+      ALL_RECORDS=texts.flatMap((t,i)=>{
+        try{return parseCSV(t);}
+        catch(e){throw new Error(csvFiles[i].name+': '+e.message);}
+      });
+      if(!ALL_RECORDS.length)throw new Error('No valid records found in the selected files.');
+      FILTER_OPTIONS=extractFilterOptions(ALL_RECORDS);
+      ACTIVE_FILTERS={date_from:'',date_to:'',subscription:new Set(),resource_type:new Set(),resource_group:new Set()};
+      DATA=aggregate(ALL_RECORDS);
+      loadingMsg.style.display='none';
+      const label=csvFiles.length===1?csvFiles[0].name:csvFiles.length+' files combined';
+      showDashboard(label);
+    }catch(err){loadingMsg.style.display='none';errorMsg.textContent='❌ '+err.message;}
+  }).catch(err=>{loadingMsg.style.display='none';errorMsg.textContent='❌ '+err.message;});
+}
+
+function destroyCharts(){chartInstances.forEach(c=>c.destroy());chartInstances=[]}
+
+// ===========================================================================
+// DEMO DATA GENERATOR
+// ===========================================================================
+function generateDemoData(){
+  const subs=[
+    {name:'hub-prd-sub-network',base:22},{name:'hub-prd-sub-integration',base:18},{name:'hub-prd-sub-monitor',base:14},
+    {name:'dp1-dev-sub',base:6},{name:'dp1-acc-sub',base:9},{name:'dp1-prd-sub',base:12},
+    {name:'app1-dev-sub',base:5},{name:'app1-acc-sub',base:4},{name:'app1-prd-sub',base:13}
+  ];
+  const types=[
+    {rt:'microsoft.compute/virtualmachines',w:0.25},{rt:'microsoft.dbforpostgresql/flexibleservers',w:0.18},
+    {rt:'microsoft.network/azurefirewalls',w:0.12},{rt:'microsoft.databricks/workspaces',w:0.10},
+    {rt:'microsoft.storage/storageaccounts',w:0.08},{rt:'microsoft.keyvault/vaults',w:0.05},
+    {rt:'microsoft.network/applicationgateways',w:0.05},{rt:'microsoft.containerregistry/registries',w:0.04},
+    {rt:'microsoft.eventhub/namespaces',w:0.04},{rt:'microsoft.apimanagement/service',w:0.03},
+    {rt:'microsoft.logic/workflows',w:0.03},{rt:'microsoft.cache/redis',w:0.03}
+  ];
+  const rgs=['rg-network','rg-data','rg-compute','rg-security','rg-monitoring','rg-integration','rg-shared'];
+  const resNames=['fw-hub-01','psql-flex-prod','vm-worker-01','vm-worker-02','dbw-analytics','st-datalake',
+    'kv-secrets-prod','agw-frontend','cr-images','eh-ingest','apim-gateway','logic-etl-01',
+    'redis-cache-01','vm-batch-03','st-backups','psql-flex-dev','vm-dev-01','dbw-dev'];
+  const records=[];
+  const seed=(x)=>{x=Math.sin(x)*10000;return x-Math.floor(x)};
+  let si=42;
+  const rand=()=>{si++;return seed(si)};
+
+  // Generate 90 days as of Jan 1 2026
+  const startDate=new Date(2026,0,1);
+  for(let day=0;day<90;day++){
+    const d=new Date(startDate);d.setDate(d.getDate()+day);
+    const yyyy=d.getFullYear();
+    const mm=String(d.getMonth()+1).padStart(2,'0');
+    const dd=String(d.getDate()).padStart(2,'0');
+    const dateFmt=`${yyyy}-${mm}-${dd}`;
+    const month=`${yyyy}${mm}`;
+    // slight upward trend + weekend dip + some noise
+    const dayOfWeek=d.getDay();
+    const weekendFactor=(dayOfWeek===0||dayOfWeek===6)?0.7:1.0;
+    const trendFactor=1+day*0.002;
+
+    for(const sub of subs){
+      const numRes=3+Math.floor(rand()*4);
+      for(let ri=0;ri<numRes;ri++){
+        const typeIdx=Math.floor(rand()*types.length);
+        const t=types[typeIdx];
+        const resIdx=Math.floor(rand()*resNames.length);
+        const rn=resNames[resIdx]+'-'+sub.name.split('-')[0];
+        const rg=rgs[Math.floor(rand()*rgs.length)];
+        const baseCost=sub.base*t.w*trendFactor*weekendFactor;
+        const cost=Math.max(0.01,baseCost*(0.7+rand()*0.6));
+        const costUsd=cost*1.18;
+        records.push({
+          sub_id:'demo-'+sub.name,sub:sub.name,date:dateFmt,month,
+          res_id:`/subscriptions/demo/resourceGroups/${rg}/providers/${t.rt}/${rn}`,
+          res_name:rn,res_type:t.rt,rg,
+          cost:Math.round(cost*10000)/10000,
+          cost_usd:Math.round(costUsd*10000)/10000,
+          currency:'EUR'
+        });
+      }
+    }
+  }
+  return records;
+}
+
+document.getElementById('demoBtn').addEventListener('click',()=>{
+  ALL_RECORDS=generateDemoData();
+  FILTER_OPTIONS=extractFilterOptions(ALL_RECORDS);
+  ACTIVE_FILTERS={date_from:'',date_to:'',subscription:new Set(),resource_type:new Set(),resource_group:new Set()};
+  DATA=aggregate(ALL_RECORDS);
+  showDashboard('demo_data');
+});
+
+function showDashboard(filename){
+  document.getElementById('uploadScreen').style.display='none';
+  document.getElementById('dashboardScreen').style.display='block';
+  const match=filename.match(/daily_costs_by_resource_([^_]+)_/);
+  const customer=match?match[1]:(filename.endsWith(' files combined')?filename:'');
+  document.getElementById('dashTitle').textContent=(customer?customer+' — ':'')+'Azure Cost Dashboard';
+  document.getElementById('dashMeta').textContent='Inputdata range: '+DATA.date_from+' to '+DATA.date_to;
+  buildFilterBar();
+  renderKPIs();renderDailyTrend();renderTypeBreakdown();renderMoM();renderSubChart();renderSubTabs();renderTopResources();renderMomTable();
+  initForecastSliders();
+  renderForecast();
+}
+
+// ===========================================================================
+// CHART DEFAULTS (theme-aware)
+// ===========================================================================
+function getCSSVar(name){return getComputedStyle(document.documentElement).getPropertyValue(name).trim()}
+function isDark(){return document.documentElement.getAttribute('data-theme')!=='light'}
+
+function applyChartTheme(){
+  Chart.defaults.color=getCSSVar('--text-dim');
+  Chart.defaults.borderColor=getCSSVar('--border');
+  Chart.defaults.font.family="'DM Sans',sans-serif";
+  Chart.defaults.font.size=11;
+  Chart.defaults.plugins.legend.labels.usePointStyle=true;
+  Chart.defaults.plugins.legend.labels.pointStyleWidth=8;
+  Chart.defaults.plugins.legend.labels.padding=16;
+}
+applyChartTheme();
+
+function getTooltipStyle(){
+  return{backgroundColor:getCSSVar('--surface-2'),borderColor:getCSSVar('--border'),borderWidth:1,
+    titleColor:getCSSVar('--text'),bodyColor:getCSSVar('--text-dim'),
+    titleFont:{family:"'DM Sans',sans-serif",weight:600},bodyFont:{family:"'JetBrains Mono',monospace",size:12},cornerRadius:8,padding:12};
+}
+let tooltipStyle=getTooltipStyle();
+
+function makeChart(id,cfg){const ctx=document.getElementById(id).getContext('2d');const c=new Chart(ctx,cfg);chartInstances.push(c);return c}
+
+// Theme toggle handler
+function toggleTheme(){
+  const html=document.documentElement;
+  const next=html.getAttribute('data-theme')==='dark'?'light':'dark';
+  html.setAttribute('data-theme',next);
+  localStorage.setItem('dco-theme',next);
+  // Re-apply Chart.js theme and re-render
+  applyChartTheme();
+  tooltipStyle=getTooltipStyle();
+  if(DATA){destroyCharts();renderDailyTrend();renderTypeBreakdown();renderMoM();renderSubChart();renderSubTabs();renderForecast()}}
+document.getElementById('themeToggle').addEventListener('click',toggleTheme);
+document.getElementById('themeToggleUpload').addEventListener('click',toggleTheme);
+
+// ===========================================================================
+// EXPORT
+// ===========================================================================
+(function(){
+  const wrap = document.getElementById('exportWrap');
+  const btn  = document.getElementById('exportBtn');
+
+  // Toggle dropdown
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    wrap.classList.toggle('open');
+  });
+  document.addEventListener('click', () => wrap.classList.remove('open'));
+  wrap.querySelector('.export-dropdown').addEventListener('click', e => e.stopPropagation());
+
+  // ── Excel export ──
+  document.getElementById('exportExcel').addEventListener('click', async () => {
+    wrap.classList.remove('open');
+    if (!DATA) { alert('No data loaded.'); return; }
+    if (typeof ExcelJS === 'undefined') { alert('ExcelJS library not available. Check your internet connection.'); return; }
+
+    const months = DATA.months;
+    const workbook  = new ExcelJS.Workbook();
+
+    // Sheet 1: Overview (subscription totals by month)
+    const overviewHeader = ['Subscription', ...months, 'Total'];
+    const overviewRows = DATA.subs.map(s => {
+      const subByMonth = {};
+      (DATA.sub_mom[s.sub] || []).forEach(e => { subByMonth[e.m] = e.c; });
+      const subValues = months.map(m => subByMonth[m] || 0);
+      const subTotal = Math.round(subValues.reduce((a, b) => a + b, 0) * 100) / 100;
+      return [s.sub, ...subValues, subTotal];
+    });
+
+    const overviewWs = workbook.addWorksheet('Overview by Subscription');
+    overviewWs.addTable({
+      name: 'OverviewBySubscription',
+      ref: 'A1',
+      headerRow: true,
+      totalsRow: true,
+      style: {
+        theme: 'TableStyleLight8',
+        showFirstColumn: false,
+        showLastColumn: false,
+        showRowStripes: true,
+        showColumnStripes: false,
+      },
+      columns: overviewHeader.map((h, i) => ({
+        name: h,
+        filterButton: true,
+        totalsRowFunction: i === 0 ? 'none' : 'sum',
+        totalsRowLabel: i === 0 ? 'TOTAL' : undefined,
+      })),
+      rows: overviewRows,
+    });
+    overviewWs.getColumn(1).width = 30;
+    for (let ci = 2; ci <= overviewHeader.length; ci++) {
+      overviewWs.getColumn(ci).width = 14;
+      overviewWs.getColumn(ci).numFmt = '#,##0.00';
+    }
+
+    // Sheet 2: Detailed collapsible view (subscription -> resource group)
+    const detailHeader = ['Subscription / Resource Group', ...months, 'Total'];
+    const worksheet = workbook.addWorksheet('Cost by Subscription');
+    const headerRow = worksheet.addRow(detailHeader);
+    headerRow.font = { bold: true };
+    headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
+
+    let rowNum = 2;
+    worksheet.properties.outlineLevelRow = 1;
+
+    for (const sub of DATA.subs) {
+      const subByMonth = {};
+      (DATA.sub_mom[sub.sub] || []).forEach(e => { subByMonth[e.m] = e.c; });
+      const subValues = months.map(m => subByMonth[m] || 0);
+      const subTotal = Math.round(subValues.reduce((a, b) => a + b, 0) * 100) / 100;
+
+      const subRow = worksheet.addRow([sub.sub, ...subValues, subTotal]);
+      subRow.font = { bold: true };
+      subRow.outlineLevel = 0;
+      rowNum++;
+
+      const sub_rgs = DATA.sub_rg.filter(x => x.sub === sub.sub);
+      for (const rg_item of sub_rgs) {
+        const rgByMonth = {};
+        (DATA.sub_rg_mom[rg_item.sub + '|' + rg_item.rg] || []).forEach(e => { rgByMonth[e.m] = e.c; });
+        const rgValues = months.map(m => rgByMonth[m] || 0);
+        const rgTotal = Math.round(rgValues.reduce((a, b) => a + b, 0) * 100) / 100;
+
+        // Hide unassigned lines only when they contribute nothing.
+        if (rg_item.rg === '(unassigned)' && rgTotal === 0 && rgValues.every(v => v === 0)) {
+          continue;
+        }
+
+        const rgRow = worksheet.addRow([rg_item.rg, ...rgValues, rgTotal]);
+        rgRow.outlineLevel = 1;
+        for (let ci = 2; ci <= detailHeader.length; ci++) {
+          rgRow.getCell(ci).numFmt = '#,##0.00';
+        }
+        rowNum++;
+      }
+
+      for (let ci = 2; ci <= detailHeader.length; ci++) {
+        subRow.getCell(ci).numFmt = '#,##0.00';
+      }
+    }
+
+    worksheet.getColumn(1).width = 30;
+    for (let ci = 2; ci <= detailHeader.length; ci++) {
+      worksheet.getColumn(ci).width = 14;
+    }
+
+    // Download
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob   = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url    = URL.createObjectURL(blob);
+    const a      = document.createElement('a');
+    a.href       = url;
+    const customer = (document.getElementById('dashTitle').textContent || 'cost').replace(' — Azure Cost Dashboard', '').trim();
+    const dateStr  = new Date().toISOString().slice(0, 10);
+    a.download   = `${customer}_azure_cost_${dateStr}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+}());
+
+// ===========================================================================
+// KPIs
+// ===========================================================================
+function renderKPIs(){
+  const el=document.getElementById('kpis');
+  if(!DATA||!DATA.daily.length){el.innerHTML='<div class="kpi"><div class="label">No data</div><div class="value">—</div></div>';return}
+  const months=DATA.months;const lastMonth=months.length>=2?months[months.length-2]:null;const thisMonth=months[months.length-1];
+  let lastTotal=0,thisTotal=0;
+  DATA.daily.forEach(d=>{const m=d.d.substring(0,7);if(m===lastMonth)lastTotal+=d.c;if(m===thisMonth)thisTotal+=d.c});
+  const dailyAvg=DATA.grand_total/DATA.daily.length;
+  const maxDay=DATA.daily.reduce((a,b)=>a.c>b.c?a:b);
+  const changePct=lastTotal>0?((thisTotal-lastTotal)/lastTotal*100):0;
+  el.innerHTML=`
+    <div class="kpi"><div class="label">Total (${DATA.date_from} — ${DATA.date_to})</div><div class="value">${EUR(DATA.grand_total)}</div><div class="sub-value">${DATA.grand_total_usd.toLocaleString('en-US',{minimumFractionDigits:2})} USD</div></div>
+    <div class="kpi"><div class="label">${lastMonth||'—'}</div><div class="value">${EUR(lastTotal)}</div></div>
+    <div class="kpi"><div class="label">${thisMonth} (MTD)</div><div class="value">${EUR(thisTotal)}</div><div class="sub-value"><span class="badge ${changePct>5?'up':changePct<-5?'down':'neutral'}">${changePct>0?'↑':changePct<0?'↓':'='} ${Math.abs(changePct).toFixed(1)}% vs prev</span></div></div>
+    <div class="kpi"><div class="label">Daily Average</div><div class="value">${EUR(dailyAvg)}</div></div>
+    <div class="kpi"><div class="label">Peak Day</div><div class="value">${EUR(maxDay.c)}</div><div class="sub-value">${maxDay.d}</div></div>`;
+}
+
+// ===========================================================================
+// CHARTS
+// ===========================================================================
+function renderDailyTrend(){
+  if(!DATA||!DATA.daily.length)return;
+  // Exclude the last day — it is still open and its cost is not yet final
+  const days=DATA.daily.slice(0,-1);
+  if(!days.length)return;
+  const ma=[];const w=7;
+  for(let i=0;i<days.length;i++){const s=Math.max(0,i-w+1);const sl=days.slice(s,i+1);ma.push(sl.reduce((a,x)=>a+x.c,0)/sl.length)}
+  makeChart('chartDaily',{type:'line',data:{labels:days.map(d=>d.d),datasets:[
+    {label:'Daily Cost',data:days.map(d=>d.c),borderColor:'rgba(79,140,255,0.4)',backgroundColor:'rgba(79,140,255,0.06)',fill:true,tension:.3,pointRadius:0,pointHoverRadius:5,borderWidth:1.5},
+    {label:'7-Day Average',data:ma,borderColor:'#4f8cff',borderWidth:2.5,pointRadius:0,pointHoverRadius:5,tension:.3}
+  ]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{tooltip:{...tooltipStyle,callbacks:{label:c=>` ${c.dataset.label}: ${EUR(c.parsed.y)}`}},legend:{position:'top',align:'end'}},scales:{x:{ticks:{maxTicksLimit:15,font:{family:"'JetBrains Mono'",size:10}},grid:{display:false}},y:{ticks:{callback:v=>EUR(v),font:{family:"'JetBrains Mono'",size:10}}}}}});
+}
+
+function renderTypeBreakdown(){
+  if(!DATA||!DATA.by_type.length)return;
+  const top10=DATA.by_type.slice(0,10);const othersTotal=DATA.by_type.slice(10).reduce((s,x)=>s+x.c,0);
+  const labels=top10.map(x=>shortType(x.rt));const values=top10.map(x=>x.c);
+  if(othersTotal>0){labels.push('Others');values.push(Math.round(othersTotal*100)/100)}
+  makeChart('chartTypes',{type:'doughnut',data:{labels,datasets:[{data:values,backgroundColor:COLORS.slice(0,labels.length),borderWidth:0,hoverOffset:8}]},options:{responsive:true,maintainAspectRatio:false,cutout:'62%',plugins:{legend:{position:'right',labels:{font:{size:11},padding:10}},tooltip:{...tooltipStyle,callbacks:{label:c=>` ${c.label}: ${EUR(c.parsed)}`}}}}});
+}
+
+function renderMoM(){
+  if(!DATA||!Object.keys(DATA.type_mom).length)return;
+  const types=Object.keys(DATA.type_mom).slice(0,8);
+  const datasets=DATA.months.map((m,mi)=>({label:m,data:types.map(rt=>{const e=DATA.type_mom[rt]?.find(x=>x.m===m);return e?e.c:0}),backgroundColor:COLORS[mi],borderRadius:4,barPercentage:.7}));
+  makeChart('chartMom',{type:'bar',data:{labels:types.map(shortType),datasets},options:{responsive:true,maintainAspectRatio:false,plugins:{tooltip:{...tooltipStyle,callbacks:{label:c=>` ${c.dataset.label}: ${EUR(c.parsed.y)}`}},legend:{position:'top',align:'end'}},scales:{x:{ticks:{font:{size:10},maxRotation:45},grid:{display:false}},y:{ticks:{callback:v=>EUR(v),font:{family:"'JetBrains Mono'",size:10}}}}}});
+}
+
+function renderSubChart(){
+  if(!DATA||!DATA.subs.length)return;
+  const subs=DATA.subs.slice(0,15);
+  makeChart('chartSubs',{type:'bar',data:{labels:subs.map(s=>s.sub),datasets:[{label:'Total Cost',data:subs.map(s=>s.c),backgroundColor:COLORS.map(c=>c+'99'),borderColor:COLORS,borderWidth:1,borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{tooltip:{...tooltipStyle,callbacks:{label:c=>` ${EUR(c.parsed.x)}`}},legend:{display:false}},scales:{x:{ticks:{callback:v=>EUR(v),font:{family:"'JetBrains Mono'",size:10}}},y:{ticks:{font:{size:11}},grid:{display:false}}}}});
+}
+
+let subTrendChart=null;
+function renderSubTrend(sub){
+  if(subTrendChart){subTrendChart.destroy();chartInstances=chartInstances.filter(c=>c!==subTrendChart)}
+  // Exclude the last day — it is still open and its cost is not yet final
+  const allSubData=DATA.daily_sub[sub]||[];
+  const subData=allSubData.slice(0,-1);
+  subTrendChart=makeChart('chartSubTrend',{type:'line',data:{labels:subData.map(d=>d.d),datasets:[{label:sub,data:subData.map(d=>d.c),borderColor:'#22d3ab',backgroundColor:'rgba(34,211,171,0.08)',fill:true,tension:.3,pointRadius:0,pointHoverRadius:4,borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:{tooltip:{...tooltipStyle,callbacks:{label:c=>` ${EUR(c.parsed.y)}`}},legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:12,font:{family:"'JetBrains Mono'",size:10}},grid:{display:false}},y:{ticks:{callback:v=>EUR(v),font:{family:"'JetBrains Mono'",size:10}}}}}});
+}
+
+function renderSubTabs(){
+  const el=document.getElementById('subTabs');
+  if(!DATA||!DATA.subs.length){el.innerHTML='';return}
+  const topSubs=DATA.subs.slice(0,6);
+  el.innerHTML=topSubs.map((s,i)=>`<button class="tab-btn ${i===0?'active':''}" data-sub="${s.sub}">${s.sub}</button>`).join('');
+  el.querySelectorAll('.tab-btn').forEach(btn=>{btn.addEventListener('click',()=>{el.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderSubTrend(btn.dataset.sub)})});
+  if(topSubs.length)renderSubTrend(topSubs[0].sub);
+}
+
+function renderTopResources(){
+  const el=document.getElementById('topResourcesTable');
+  if(!DATA||!DATA.top_resources.length){el.innerHTML='';return}
+  const resources=DATA.top_resources.slice(0,30);const maxCost=resources[0]?.c||1;
+  let html=`<thead><tr><th class="rank">#</th><th>Resource</th><th>Type</th><th>Subscription</th><th class="num">Total Cost</th><th class="num">Cost (USD)</th></tr></thead><tbody>`;
+  resources.forEach((r,i)=>{const pct=(r.c/maxCost*100).toFixed(0);
+    html+=`<tr><td class="rank">${i+1}</td><td class="bar-cell"><div class="bar-bg" style="width:${pct}%;background:${COLORS[i%COLORS.length]}"></div><span style="position:relative">${r.rn}</span></td><td style="color:var(--text-dim);font-size:12px">${shortType(r.rt)}</td><td style="color:var(--text-dim);font-size:12px">${r.sub}</td><td class="num" style="font-weight:600">${EUR(r.c)}</td><td class="num">${r.cu.toLocaleString('en-US',{minimumFractionDigits:2})} $</td></tr>`});
+  el.innerHTML=html+'</tbody>';
+}
+
+function renderMomTable(){
+  const el=document.getElementById('momTable');
+  if(!DATA||!Object.keys(DATA.type_mom).length){el.innerHTML='';return}
+  const months=DATA.months;const types=Object.keys(DATA.type_mom);
+  const rows=types.map(rt=>{const vals={};DATA.type_mom[rt].forEach(e=>{vals[e.m]=e.c});return{rt,vals}});
+  const latest=months[months.length-1];rows.sort((a,b)=>(b.vals[latest]||0)-(a.vals[latest]||0));
+  let html=`<thead><tr><th>Resource Type</th>`;months.forEach(m=>{html+=`<th class="num">${m}</th>`});if(months.length>=2)html+=`<th class="num">Change</th>`;html+=`</tr></thead><tbody>`;
+  rows.slice(0,20).forEach(row=>{html+=`<tr><td>${shortType(row.rt)}</td>`;months.forEach(m=>{html+=`<td class="num">${EUR(row.vals[m]||0)}</td>`});
+    if(months.length>=2){const prev=row.vals[months[months.length-2]]||0;const curr=row.vals[months[months.length-1]]||0;const pct=prev>0?((curr-prev)/prev*100):(curr>0?100:0);const cls=pct>5?'up':pct<-5?'down':'neutral';const arrow=pct>0?'↑':pct<0?'↓':'=';html+=`<td class="num"><span class="badge ${cls}">${arrow} ${Math.abs(pct).toFixed(1)}%</span></td>`}
+    html+=`</tr>`});
+  el.innerHTML=html+'</tbody>';
+}
+
+// ===========================================================================
+// COLLAPSIBLE SECTIONS
+// ===========================================================================
+function toggleSection(headerEl) {
+  headerEl.closest('.env-section').classList.toggle('collapsed');
+}
+
+// ===========================================================================
+// FORECASTING  (linear regression · 90-day horizon · configurable PI)
+// ===========================================================================
+
+// Normal distribution inverse CDF approximation (Beasley-Springer-Moro)
+function normInv(p) {
+  // rational approximation for the central 0 < p < 1
+  const a = [0, -3.969683028665376e+01,  2.209460984245205e+02,
+               -2.759285104469687e+02,  1.383577518672690e+02,
+               -3.066479806614716e+01,  2.506628277459239e+00];
+  const b = [0, -5.447609879822406e+01,  1.615858368580409e+02,
+               -1.556989798598866e+02,  6.680131188771972e+01,
+               -1.328068155288572e+01];
+  const c = [0, -7.784894002430293e-03, -3.223964580411365e-01,
+               -2.400758277161838e+00, -2.549732539343734e+00,
+                4.374664141464968e+00,  2.938163982698783e+00];
+  const d = [0,  7.784695709041462e-03,  3.224671290700398e-01,
+                2.445134137142996e+00,  3.754408661907416e+00];
+  const pLow = 0.02425, pHigh = 1 - pLow;
+  let q, r;
+  if (p < pLow) {
+    q = Math.sqrt(-2*Math.log(p));
+    return (((((c[1]*q+c[2])*q+c[3])*q+c[4])*q+c[5])*q+c[6]) /
+           ((((d[1]*q+d[2])*q+d[3])*q+d[4])*q+1);
+  } else if (p <= pHigh) {
+    q = p - 0.5; r = q*q;
+    return (((((a[1]*r+a[2])*r+a[3])*r+a[4])*r+a[5])*r+a[6])*q /
+           (((((b[1]*r+b[2])*r+b[3])*r+b[4])*r+b[5])*r+1);
+  } else {
+    q = Math.sqrt(-2*Math.log(1-p));
+    return -(((((c[1]*q+c[2])*q+c[3])*q+c[4])*q+c[5])*q+c[6]) /
+             ((((d[1]*q+d[2])*q+d[3])*q+d[4])*q+1);
+  }
+}
+
+function computeForecast(lookbackDays, ciPct) {
+  if (!DATA || DATA.daily.length < 15) return null;
+  const days = DATA.daily;
+
+  // ⚠ Exclude the last day: it is still open and its cost is not yet final.
+  const allClosed = days.slice(0, -1);
+  if (allClosed.length < 14) return null;
+
+  // Apply look-back window (take the most recent N closed days)
+  const training = lookbackDays >= allClosed.length
+    ? allClosed
+    : allClosed.slice(-lookbackDays);
+  const nt = training.length;
+
+  // Ordinary least-squares on closed days: cost = a + b * day_index
+  let sumX=0, sumY=0, sumXY=0, sumX2=0;
+  for (let i=0; i<nt; i++) {
+    sumX+=i; sumY+=training[i].c; sumXY+=i*training[i].c; sumX2+=i*i;
+  }
+  const denom = nt*sumX2 - sumX*sumX;
+  if (!denom) return null;
+  const b = (nt*sumXY - sumX*sumY) / denom;
+  const a = (sumY - b*sumX) / nt;
+
+  // Residual standard error
+  let sse=0;
+  for (let i=0; i<nt; i++) { const e=training[i].c-(a+b*i); sse+=e*e; }
+  const se = Math.sqrt(sse / Math.max(nt-2, 1));
+
+  const xMean = sumX / nt;
+  const Sxx   = sumX2 - nt*xMean*xMean;
+
+  // z-score for the chosen CI (two-sided: alpha/2 each tail)
+  const alpha = 1 - ciPct / 100;
+  const z     = normInv(1 - alpha / 2);
+
+  // Project 90 days forward from the last closed day in the training window
+  const lastDate = new Date(training[nt-1].d);
+  const fwd = [];
+  for (let ahead=1; ahead<=90; ahead++) {
+    const x    = nt - 1 + ahead;
+    const yhat = Math.max(0, a + b*x);
+    const ci   = z * se * Math.sqrt(1 + 1/nt + Math.pow(x - xMean, 2) / Sxx);
+    const d    = new Date(lastDate);
+    d.setDate(d.getDate() + ahead);
+    fwd.push({
+      d:     d.toISOString().slice(0, 10),
+      yhat,
+      upper: yhat + ci,
+      lower: Math.max(0, yhat - ci),
+    });
+  }
+
+  // Aggregate to calendar months
+  const monthlyProj = {};
+  for (const p of fwd) {
+    const m = p.d.slice(0, 7);
+    if (!monthlyProj[m]) monthlyProj[m] = { yhat:0, upper:0, lower:0, days:0 };
+    monthlyProj[m].yhat  += p.yhat;
+    monthlyProj[m].upper += p.upper;
+    monthlyProj[m].lower += p.lower;
+    monthlyProj[m].days++;
+  }
+
+  const proj30 = fwd.slice(0, 30).reduce((s,p)=>s+p.yhat, 0);
+  const proj60 = fwd.slice(0, 60).reduce((s,p)=>s+p.yhat, 0);
+  const proj90 = fwd.slice(0, 90).reduce((s,p)=>s+p.yhat, 0);
+  const last30 = allClosed.slice(-30).reduce((s,d)=>s+d.c, 0);
+
+  // lastClosedIdx: position of the last closed day in DATA.daily (= days.length - 2)
+  // We must find the index of training's last day in all DATA.daily for the chart bridge
+  const bridgeDate  = training[nt-1].d;
+  const lastClosedIdx = DATA.daily.findIndex(d => d.d === bridgeDate);
+
+  return { b, fwd, proj30, proj60, proj90, last30, monthlyProj, lastClosedIdx };
+}
+
+function getForecastParams() {
+  const slLB = document.getElementById('sliderLookback');
+  const slCI = document.getElementById('sliderCI');
+  return {
+    lookback: slLB ? parseInt(slLB.value, 10) : 90,
+    ciPct:    slCI ? parseInt(slCI.value, 10) : 80,
+  };
+}
+
+function renderForecast() {
+  const kpiEl = document.getElementById('forecastKpis');
+  const { lookback, ciPct } = getForecastParams();
+  const fc = computeForecast(lookback, ciPct);
+  if (!fc) {
+    if (kpiEl) kpiEl.innerHTML = '<div class="kpi"><div class="label">Insufficient data for forecast</div><div class="value" style="font-size:18px">Need ≥ 15 days</div></div>';
+    return;
+  }
+  // Keep summary pill in sync
+  const summaryEl = document.getElementById('forecastSummary');
+  if (summaryEl) summaryEl.textContent = `Linear trend · 90-day projection · ${ciPct}% CI · last ${Math.min(lookback, DATA.daily.length - 1)} closed days`;
+
+  // Forecast KPIs
+  const trendPerMonth = fc.b * 30;
+  const last30Avg     = fc.last30 / Math.min(DATA.daily.length, 30);
+  const proj30Avg     = fc.proj30 / 30;
+  const changePct     = last30Avg > 0 ? ((proj30Avg - last30Avg) / last30Avg * 100) : 0;
+  const trendCls      = trendPerMonth > 0 ? 'up' : trendPerMonth < 0 ? 'down' : 'neutral';
+  const trendArrow    = trendPerMonth > 0 ? '↑' : trendPerMonth < 0 ? '↓' : '=';
+
+  if (kpiEl) kpiEl.innerHTML = `
+    <div class="kpi">
+      <div class="label">Next 30 Days (projected)</div>
+      <div class="value">${EUR(fc.proj30)}</div>
+      <div class="sub-value">Last 30d actual: ${EUR(fc.last30)}</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Next 60 Days (projected)</div>
+      <div class="value">${EUR(fc.proj60)}</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Next 90 Days (projected)</div>
+      <div class="value">${EUR(fc.proj90)}</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Monthly Trend</div>
+      <div class="value"><span class="badge ${trendCls}">${trendArrow} ${EUR(Math.abs(trendPerMonth))}/mo</span></div>
+      <div class="sub-value">${Math.abs(changePct).toFixed(1)}% projected ${trendPerMonth >= 0 ? 'increase' : 'decrease'}</div>
+    </div>`;
+
+  // Combined historical + forecast chart
+  const n             = DATA.daily.length;
+  const allLabels     = [...DATA.daily.map(d=>d.d), ...fc.fwd.map(p=>p.d)];
+  const histData      = [...DATA.daily.map(d=>d.c), ...Array(fc.fwd.length).fill(null)];
+  // Bridge from the last CLOSED day (n-2). The open last day stays visible in
+  // the historical line but the forecast line does NOT originate from it.
+  const lci           = fc.lastClosedIdx; // = n - 2
+  const bridgeArr     = Array(n + fc.fwd.length).fill(null);
+  bridgeArr[lci]      = DATA.daily[lci].c;
+  const forecastData  = [...bridgeArr.slice(0, n), ...fc.fwd.map(p=>p.yhat)];
+  const upperData     = [...bridgeArr.slice(0, n), ...fc.fwd.map(p=>p.upper)];
+  const lowerData     = [...bridgeArr.slice(0, n), ...fc.fwd.map(p=>p.lower)];
+
+  makeChart('chartForecast', {
+    type: 'line',
+    data: {
+      labels: allLabels,
+      datasets: [
+        {
+          label: `Historical Cost (last ${DATA.daily.length - 1} closed days)`,
+          data: histData,
+          borderColor: 'rgba(79,140,255,0.55)',
+          backgroundColor: 'rgba(79,140,255,0.05)',
+          fill: true, tension: 0.3,
+          pointRadius: 0, pointHoverRadius: 4, borderWidth: 1.5,
+        },
+        {
+          label: '_upper',
+          data: upperData,
+          borderColor: 'transparent',
+          backgroundColor: 'rgba(245,158,66,0.13)',
+          fill: '+1',
+          pointRadius: 0, borderWidth: 0,
+        },
+        {
+          label: '_lower',
+          data: lowerData,
+          borderColor: 'transparent',
+          fill: false,
+          pointRadius: 0, borderWidth: 0,
+        },
+        {
+          label: `Forecast (${ciPct}% CI, ${Math.min(lookback, DATA.daily.length-1)}d lookback)`,
+          data: forecastData,
+          borderColor: '#f59e42',
+          borderDash: [6, 3],
+          fill: false, tension: 0.3,
+          pointRadius: 0, pointHoverRadius: 4, borderWidth: 2,
+        },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        tooltip: {
+          ...tooltipStyle,
+          filter: item => !item.dataset.label.startsWith('_'),
+          callbacks: { label: c => ` ${c.dataset.label}: ${EUR(c.parsed.y)}` },
+        },
+        legend: {
+          position: 'top', align: 'end',
+          labels: { filter: item => !item.text.startsWith('_') },
+        },
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 16, font: { family: "'JetBrains Mono'", size: 10 } }, grid: { display: false } },
+        y: { ticks: { callback: v => EUR(v), font: { family: "'JetBrains Mono'", size: 10 } } },
+      },
+    },
+  });
+
+  // Monthly projection table
+  const tableEl = document.getElementById('forecastTable');
+  if (!tableEl) return;
+  const months = Object.entries(fc.monthlyProj).sort((a,b)=>a[0].localeCompare(b[0]));
+  let html = `<thead><tr>
+    <th>Month</th>
+    <th class="num">Projected Total</th>
+    <th class="num">Lower (${ciPct}% CI)</th>
+    <th class="num">Upper (${ciPct}% CI)</th>
+    <th class="num">Days</th>
+  </tr></thead><tbody>`;
+  for (const [m, v] of months) {
+    html += `<tr>
+      <td><strong>${m}</strong></td>
+      <td class="num">${EUR(v.yhat)}</td>
+      <td class="num" style="color:var(--text-dim)">${EUR(v.lower)}</td>
+      <td class="num" style="color:var(--text-dim)">${EUR(v.upper)}</td>
+      <td class="num" style="color:var(--text-dim)">${v.days}</td>
+    </tr>`;
+  }
+  tableEl.innerHTML = html + '</tbody>';
+}
+
+// Wire up forecast sliders — deferred so elements exist when renderForecast first runs
+function initForecastSliders() {
+  const slLB = document.getElementById('sliderLookback');
+  const slCI = document.getElementById('sliderCI');
+  const vLB  = document.getElementById('valLookback');
+  const vCI  = document.getElementById('valCI');
+  if (!slLB || !slCI) return;
+
+  // Clamp lookback max to available closed days when we have data
+  if (DATA) {
+    const maxLB = Math.max(14, DATA.daily.length - 1);
+    slLB.max   = maxLB;
+    slLB.value = Math.min(parseInt(slLB.value, 10), maxLB);
+    vLB.textContent = slLB.value + ' days';
+  }
+
+  function onSliderChange() {
+    vLB.textContent = slLB.value + ' days';
+    vCI.textContent = slCI.value + '%';
+    // Destroy only the forecast chart, then redraw
+    const fc = chartInstances.find(c => c.canvas && c.canvas.id === 'chartForecast');
+    if (fc) { fc.destroy(); chartInstances = chartInstances.filter(c => c !== fc); }
+    renderForecast();
+  }
+
+  slLB.addEventListener('input', onSliderChange);
+  slCI.addEventListener('input', onSliderChange);
+}
+
+// ===========================================================================
+// LIVE FX RATE  (USD → EUR) + 30-day history popup
+// ===========================================================================
+(function fxRateModule(){
+  const el      = document.getElementById('fxRate');
+  const overlay = document.getElementById('fxModal');
+  const wrap    = document.getElementById('fxChartWrap');
+  const closeBtn= document.getElementById('fxModalClose');
+  if(!el||!overlay) return;
+
+  el.textContent = '💱 …';
+  let cachedHistory = null;
+  let chartInstance = null;
+
+  // ── Fetch today's rate ──────────────────────────────────────────────────
+  fetch('https://open.er-api.com/v6/latest/USD')
+    .then(r=>r.json())
+    .then(d=>{
+      if(d.result==='success'&&d.rates?.EUR){
+        el.textContent = '1 $ = '+d.rates.EUR.toFixed(4)+' €';
+      } else { el.textContent=''; }
+    })
+    .catch(()=>{ el.textContent=''; });
+
+  // ── Open modal ──────────────────────────────────────────────────────────
+  function openModal(){
+    overlay.style.display = 'flex';
+    if(cachedHistory){ renderChart(cachedHistory); return; }
+    wrap.innerHTML = '<div class="fx-modal-loading">Loading…</div>';
+    const today = new Date();
+    const end   = today.toISOString().slice(0,10);
+    const d30   = new Date(today); d30.setDate(d30.getDate()-30);
+    const start = d30.toISOString().slice(0,10);
+    fetch(`https://api.frankfurter.dev/v1/${start}..${end}?from=USD&to=EUR`)
+      .then(r=>r.json())
+      .then(data=>{
+        if(!data.rates) throw new Error('no rates');
+        cachedHistory = data.rates;
+        renderChart(cachedHistory);
+      })
+      .catch(()=>{
+        wrap.innerHTML='<div class="fx-modal-loading" style="color:var(--red)">Could not load historical data.</div>';
+      });
+  }
+
+  // ── Render Chart.js line graph ──────────────────────────────────────────
+  function renderChart(rates){
+    const dates = Object.keys(rates).sort();
+    const values= dates.map(d=>rates[d].EUR);
+
+    wrap.innerHTML = '<canvas id="fxChart"></canvas>';
+    const ctx = document.getElementById('fxChart').getContext('2d');
+    if(chartInstance){ chartInstance.destroy(); chartInstance=null; }
+
+    const dark      = document.documentElement.getAttribute('data-theme')!=='light';
+    const gridColor = dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
+    const tickColor = dark ? '#8b9bc8' : '#6b7280';
+
+    chartInstance = new Chart(ctx,{
+      type:'line',
+      data:{
+        labels: dates,
+        datasets:[{
+          label:'1 USD in EUR',
+          data: values,
+          borderColor:'#4f8cff',
+          backgroundColor:'rgba(79,140,255,0.12)',
+          borderWidth:2,
+          pointRadius:3,
+          pointHoverRadius:5,
+          fill:true,
+          tension:0.3
+        }]
+      },
+      options:{
+        responsive:true,
+        plugins:{
+          legend:{ display:false },
+          tooltip:{
+            callbacks:{
+              label: ctx=>'€ '+ctx.parsed.y.toFixed(4)
+            }
+          }
+        },
+        scales:{
+          x:{
+            ticks:{ color:tickColor, maxTicksLimit:8, maxRotation:0 },
+            grid:{ color:gridColor }
+          },
+          y:{
+            ticks:{
+              color:tickColor,
+              callback: v=>'€ '+v.toFixed(4)
+            },
+            grid:{ color:gridColor }
+          }
+        }
+      }
+    });
+  }
+
+  // ── Close handlers ─────────────────────────────────────────────────────
+  function closeModal(){
+    overlay.style.display='none';
+  }
+  el.addEventListener('click', openModal);
+  closeBtn.addEventListener('click', closeModal);
+  overlay.addEventListener('click', e=>{ if(e.target===overlay) closeModal(); });
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape'&&overlay.style.display!=='none') closeModal(); });
+})();
+
+// ══════════════════════════════════════════════════════════════
+// STORAGE-BASED FILE LOADING
+// ══════════════════════════════════════════════════════════════
+window.onFilesLoaded = function(loadedFiles) {
+  const organized = organizeLoadedFiles(loadedFiles);
+  
+  if (organized.costsContent) {
+    const file = new File([organized.costsContent], 'costs.csv', { type: 'text/csv' });
+    handleFiles([file]);
+  }
+  
+  hideFileUploadUI();
+};
+
+async function autoLoadFromStorage() {
+  const dashboardId = 'azureCosts';
+
+  // Check if connection exists before showing spinner
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+  const uploadScreen = document.getElementById('uploadScreen');
+
+  if (hasConnection) {
+    // Show only storage loading state while manifest/files are being fetched
+    uploadScreen.classList.add('storage-loading');
+    document.getElementById('storageSpinner').style.display = 'flex';
+  }
+
+  const loaded = await initStorageFileLoader(dashboardId, (step) => {
+    const el = document.getElementById('spinnerStep');
+    if (el) el.textContent = step;
+  });
+  
+  if (!loaded) {
+    uploadScreen.classList.remove('storage-loading');
+    document.getElementById('storageSpinner').style.display = 'none';
+    document.getElementById('uploadControls').style.display = 'block';
+    showFileUploadUI();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+</script>
+<script src="../bin/table-sort.js"></script>
+</body>
+</html>
+

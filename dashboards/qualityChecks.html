@@ -1,0 +1,1172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Azure QC Dashboard</title>
+<link rel="icon" type="image/png" href="../bin/delaware-dee-rgb.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../bin/dashboard-core.css">
+<script src="../bin/storage-loader.js"></script>
+<script>
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+<!-- QC Dashboard styles live in bin/dashboard-core.css -->
+</head>
+<body class="ambient-glow">
+
+<!-- ═══════════════════════ UPLOAD ═══════════════════════ -->
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode">
+    <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
+  </button>
+  <h1>Azure QC Dashboard</h1>
+  <p>
+    Upload Key Vault, Storage Account, App Service Plan, and/or SQL QC CSVs exported by
+    <code>azure_quality_check.py</code>.<br>
+    Files are parsed entirely in your browser — nothing is uploaded to any server.
+  </p>
+
+  <div class="drop-zone" id="dropZoneMain" style="max-width:520px;margin:24px auto 0">
+    <div class="icon">📂</div>
+    <div class="label">Drop one or more QC CSV files here</div>
+    <div class="hint">Key Vault · Storage Accounts · App Service Plans · SQL Servers · SQL Databases — or click to browse</div>
+  </div>
+  <div id="fileStatusList"></div>
+  <input type="file" id="fileInputMain" accept=".csv" multiple
+         title="Expected files: *_qc_storage_*.csv, *_qc_keyvault_*.csv, *_qc_appserviceplan_*.csv, *_qc_sqlserver_*.csv, *_qc_sqldatabase_*.csv">
+  <div id="errorMsg"></div>
+  <div id="loadingMsg">⏳ Parsing…</div>
+  <button id="buildDashBtn" class="btn" style="display:none;margin-top:12px">Build Dashboard →</button>
+  <div style="margin-top:14px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+    <button id="demoBtn" class="btn btn--ghost">Load Demo Data</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════ DASHBOARD ═══════════════════════ -->
+<div id="dashboardScreen">
+  <div class="topbar">
+    <h1>
+      <img src="../bin/delaware-dee-rgb.png" alt="delaware"
+           style="height:28px;margin-right:10px;vertical-align:middle">
+      <span id="dashTitle">Azure QC Dashboard</span>
+    </h1>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode">
+        <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
+      </button>
+      <button class="topbar-btn" id="reloadBtn">↩ Load another file</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+
+  <div class="filter-bar" id="filterBar"></div>
+  <div class="kpi-row"   id="kpis"></div>
+
+  <!-- ── Subscription summary ── -->
+  <div class="env-section" id="sect-summary">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>Compliance by Subscription</h2>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full">
+          <div class="card">
+            <div style="overflow-x:auto">
+              <table class="summary-table" id="summaryTable"></table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Key Vault ── -->
+  <div class="env-section" id="sect-kv">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>🔑 Key Vault</h2>
+      <span class="env-summary" id="kvSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="check-cards" id="kvCheckCards"></div>
+      <div class="dashboard" style="padding:0;margin-top:12px">
+        <div class="row row-2">
+          <div class="card">
+            <h2>Compliance by Check</h2>
+            <div class="chart-wrap" style="height:280px"><canvas id="chartKV"></canvas></div>
+          </div>
+          <div class="card" style="flex:2">
+            <h2>Resource Detail</h2>
+            <div class="qc-table-wrap"><table class="qc-table" id="kvTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Storage Accounts ── -->
+  <div class="env-section" id="sect-st">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>💾 Storage Accounts</h2>
+      <span class="env-summary" id="stSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="check-cards" id="stCheckCards"></div>
+      <div class="dashboard" style="padding:0;margin-top:12px">
+        <div class="row row-2">
+          <div class="card">
+            <h2>Compliance by Check</h2>
+            <div class="chart-wrap" style="height:320px"><canvas id="chartST"></canvas></div>
+          </div>
+          <div class="card" style="flex:2">
+            <h2>Resource Detail</h2>
+            <div class="qc-table-wrap"><table class="qc-table" id="stTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── App Service Plans ── -->
+  <div class="env-section" id="sect-asp">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>🌐 App Service Plans</h2>
+      <span class="env-summary" id="aspSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="check-cards" id="aspCheckCards"></div>
+      <div class="dashboard" style="padding:0;margin-top:12px">
+        <div class="row row-2">
+          <div class="card">
+            <h2>Compliance by Check</h2>
+            <div class="chart-wrap" style="height:240px"><canvas id="chartASP"></canvas></div>
+          </div>
+          <div class="card" style="flex:2">
+            <h2>Resource Detail</h2>
+            <div class="qc-table-wrap"><table class="qc-table" id="aspTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SQL Servers ── -->
+  <div class="env-section" id="sect-sqlsrv">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>🖥️ SQL Servers</h2>
+      <span class="env-summary" id="sqlsrvSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="check-cards" id="sqlsrvCheckCards"></div>
+      <div class="dashboard" style="padding:0;margin-top:12px">
+        <div class="row row-2">
+          <div class="card">
+            <h2>Compliance by Check</h2>
+            <div class="chart-wrap" style="height:320px"><canvas id="chartSQLSRV"></canvas></div>
+          </div>
+          <div class="card" style="flex:2">
+            <h2>Resource Detail</h2>
+            <div class="qc-table-wrap"><table class="qc-table" id="sqlsrvTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SQL Databases ── -->
+  <div class="env-section" id="sect-sqldb">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>🗄️ SQL Databases</h2>
+      <span class="env-summary" id="sqldbSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="check-cards" id="sqldbCheckCards"></div>
+      <div class="dashboard" style="padding:0;margin-top:12px">
+        <div class="row row-2">
+          <div class="card">
+            <h2>Compliance by Check</h2>
+            <div class="chart-wrap" style="height:320px"><canvas id="chartSQLDB"></canvas></div>
+          </div>
+          <div class="card" style="flex:2">
+            <h2>Resource Detail</h2>
+            <div class="qc-table-wrap"><table class="qc-table" id="sqldbTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════
+// CHECK DEFINITIONS
+// ════════════════════════════════════════════════════════════
+const KV_CHECKS = [
+  { col: 'qc_soft_delete_enabled',          label: 'Soft Delete',     desc: 'Soft delete is enabled' },
+  { col: 'qc_purge_protection_enabled',     label: 'Purge Protection',desc: 'Purge protection is enabled' },
+  { col: 'qc_rbac_authorization',           label: 'RBAC Auth',       desc: 'Using RBAC authorization (not access policies)' },
+  { col: 'qc_network_restricted',           label: 'Net Restricted',  desc: 'Network default action is Deny' },
+  { col: 'qc_private_endpoint_configured',  label: 'Private EP',      desc: 'At least one private endpoint is configured' },
+  { col: 'qc_soft_delete_90_days',          label: '≥90d Retention',  desc: 'Soft delete retention is ≥ 90 days' },
+  { col: 'qc_has_tags',                     label: 'Tagged',          desc: 'Resource has at least one tag' },
+];
+
+const ST_CHECKS = [
+  { col: 'qc_https_only',                   label: 'HTTPS Only',      desc: 'HTTPS-only access is enforced' },
+  { col: 'qc_tls_12_or_higher',             label: 'TLS 1.2+',        desc: 'Minimum TLS version is 1.2 or higher' },
+  { col: 'qc_no_public_blob_access',        label: 'No Public Blob',  desc: 'Public blob access is disabled' },
+  { col: 'qc_shared_key_disabled',          label: 'Shared Key Off',  desc: 'Shared key access is disabled' },
+  { col: 'qc_network_restricted',           label: 'Net Restricted',  desc: 'Network default action is Deny' },
+  { col: 'qc_soft_delete_enabled',          label: 'Soft Delete',     desc: 'Blob soft delete is enabled' },
+  { col: 'qc_infrastructure_encryption',    label: 'Infra Encrypt',   desc: 'Infrastructure encryption is enabled' },
+  { col: 'qc_has_tags',                     label: 'Tagged',          desc: 'Resource has at least one tag' },
+];
+
+const ASP_CHECKS = [
+  { col: 'qc_not_free_shared',  label: 'Paid Tier',     desc: 'Plan is not on Free, Shared or Dynamic (Consumption) tier' },
+  { col: 'qc_min_2_instances',  label: '≥2 Instances',  desc: 'SKU capacity is at least 2 (High Availability)' },
+  { col: 'qc_zone_redundant',   label: 'Zone Redundant',desc: 'Zone redundancy is enabled' },
+  { col: 'qc_has_apps',         label: 'Has Apps',      desc: 'Plan hosts at least one app (no orphaned plans)' },
+  { col: 'qc_has_tags',         label: 'Tagged',        desc: 'Resource has at least one tag' },
+];
+
+const SQLSRV_CHECKS = [
+  { col: 'qc_aad_admin_configured',        label: 'AAD Admin',       desc: 'An Azure AD administrator is configured' },
+  { col: 'qc_public_access_disabled',      label: 'No Public Access',desc: 'Public network access is disabled' },
+  { col: 'qc_tls_12_or_higher',            label: 'TLS 1.2+',        desc: 'Minimum TLS version is 1.2 or higher' },
+  { col: 'qc_auditing_enabled',            label: 'Auditing On',     desc: 'Server-level blob auditing is enabled' },
+  { col: 'qc_auditing_90_days',            label: '≥90d Audit Log',  desc: 'Audit log retention is ≥ 90 days' },
+  { col: 'qc_no_azure_services_firewall',  label: 'No 0.0.0.0 Rule', desc: 'The "Allow Azure Services" (0.0.0.0) firewall rule is NOT present' },
+  { col: 'qc_private_endpoint_configured', label: 'Private EP',      desc: 'At least one private endpoint is configured' },
+  { col: 'qc_has_tags',                    label: 'Tagged',          desc: 'Resource has at least one tag' },
+];
+
+const SQLDB_CHECKS = [
+  { col: 'qc_tde_enabled',          label: 'TDE',           desc: 'Transparent Data Encryption is enabled' },
+  { col: 'qc_backup_geo_redundant', label: 'Geo Backup',    desc: 'Backup storage redundancy is Geo or GeoZone' },
+  { col: 'qc_pitr_7_days',          label: '≥7d PITR',      desc: 'Point-in-time restore retention is ≥ 7 days' },
+  { col: 'qc_ltr_configured',       label: 'LTR Configured',desc: 'Long-term backup retention policy is configured' },
+  { col: 'qc_db_auditing_enabled',  label: 'Auditing On',   desc: 'DB-level or server-level auditing is enabled' },
+  { col: 'qc_atp_enabled',          label: 'ATP',           desc: 'Advanced Threat Protection is enabled' },
+  { col: 'qc_zone_redundant',       label: 'Zone Redundant',desc: 'Zone redundancy is enabled' },
+  { col: 'qc_has_tags',             label: 'Tagged',        desc: 'Resource has at least one tag' },
+];
+
+// ════════════════════════════════════════════════════════════
+// STATE
+// ════════════════════════════════════════════════════════════
+let KV_ALL = [], ST_ALL = [], ASP_ALL = [], SQLSRV_ALL = [], SQLDB_ALL = [];
+let ACTIVE_SUBS = new Set();
+let _chartKV = null, _chartST = null, _chartASP = null, _chartSQLSRV = null, _chartSQLDB = null;
+const DETAIL_SORT_STATE = {};
+
+// ════════════════════════════════════════════════════════════
+// HELPERS
+// ════════════════════════════════════════════════════════════
+const bv  = (r, col) => (r[col] || '').toLowerCase() === 'true';
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const lvl = p => p >= 80 ? 'high' : p >= 50 ? 'mid' : 'low';
+const pct = (n, d) => d ? Math.round(n / d * 100) : 0;
+const badgeCls = s => s >= 80 ? 'up' : s >= 50 ? 'neutral' : 'down';
+
+// ════════════════════════════════════════════════════════════
+// CSV PARSING
+// ════════════════════════════════════════════════════════════
+function parseQcCsv(text) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  if (!lines.length) return { header: [], records: [] };
+  if (lines[0].charCodeAt(0) === 0xFEFF) lines[0] = lines[0].slice(1);
+  const header = lines[0].split(';').map(h => h.trim().toLowerCase());
+  const records = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cells = line.split(';');
+    const rec = {};
+    header.forEach((h, j) => { rec[h] = (cells[j] || '').trim(); });
+    records.push(rec);
+  }
+  return { header, records };
+}
+
+function detectCsvType(header) {
+  if (header.includes('vault_uri'))            return 'kv';
+  if (header.includes('enc_blob_enabled'))     return 'st';
+  if (header.includes('apps_count'))           return 'asp';
+  if (header.includes('minimal_tls_version'))  return 'sqlsrv';
+  if (header.includes('tde_enabled'))          return 'sqldb';
+  return null;
+}
+
+// ════════════════════════════════════════════════════════════
+// FILE HANDLING
+// ════════════════════════════════════════════════════════════
+const errorMsg  = document.getElementById('errorMsg');
+const loadingMsg = document.getElementById('loadingMsg');
+const buildBtn  = document.getElementById('buildDashBtn');
+
+(function () {
+  const zone = document.getElementById('dropZoneMain');
+  const inp  = document.getElementById('fileInputMain');
+  zone.addEventListener('click', () => inp.click());
+  zone.addEventListener('dragover',  e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+  });
+  inp.addEventListener('change', () => {
+    if (!inp.files.length) return;
+    const files = [...inp.files].filter(f => {
+      if (!/_qc_/i.test(f.name))
+        return confirm(`"${f.name}" doesn't look like a Quality Check export.\nExpected a filename containing "_qc_".\n\nLoad it anyway?`);
+      return true;
+    });
+    if (files.length) handleFiles(files);
+    inp.value = '';
+  });
+})();
+
+function handleFiles(fileList) {
+  errorMsg.textContent = '';
+  loadingMsg.style.display = 'block';
+  const files = Array.from(fileList);
+  let processed = 0;
+  const errors = [];
+
+  files.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      processed++;
+      try {
+        const { header, records } = parseQcCsv(e.target.result);
+        if (!records.length) throw new Error(`No data rows in “${file.name}”.`);
+        const type = detectCsvType(header);
+        if (!type) throw new Error(`Cannot detect type for “${file.name}” — check column names.`);
+        if (type === 'kv')     KV_ALL     = records;
+        if (type === 'st')     ST_ALL     = records;
+        if (type === 'asp')    ASP_ALL    = records;
+        if (type === 'sqlsrv') SQLSRV_ALL = records;
+        if (type === 'sqldb')  SQLDB_ALL  = records;
+      } catch (err) {
+        errors.push(err.message);
+      }
+      if (processed === files.length) {
+        loadingMsg.style.display = 'none';
+        if (errors.length) errorMsg.textContent = '❌ ' + errors.join('  |  ');
+        updateFileStatus();
+        if (KV_ALL.length || ST_ALL.length || ASP_ALL.length || SQLSRV_ALL.length || SQLDB_ALL.length) buildBtn.style.display = '';
+      }
+    };
+    reader.onerror = () => {
+      processed++;
+      errors.push(`Failed to read “${file.name}”.`);
+      if (processed === files.length) {
+        loadingMsg.style.display = 'none';
+        errorMsg.textContent = '❌ ' + errors.join('  |  ');
+      }
+    };
+    reader.readAsText(file, 'utf-8');
+  });
+}
+
+function updateFileStatus() {
+  const list = document.getElementById('fileStatusList');
+  const zone = document.getElementById('dropZoneMain');
+  const items = [];
+  if (KV_ALL.length)     items.push(`🔑 Key Vault — ${KV_ALL.length} resources`);
+  if (ST_ALL.length)     items.push(`💾 Storage — ${ST_ALL.length} resources`);
+  if (ASP_ALL.length)    items.push(`🌐 App Service Plans — ${ASP_ALL.length} resources`);
+  if (SQLSRV_ALL.length) items.push(`🖥️ SQL Servers — ${SQLSRV_ALL.length} resources`);
+  if (SQLDB_ALL.length)  items.push(`🗄️ SQL Databases — ${SQLDB_ALL.length} resources`);
+  list.innerHTML = items.map(i => `<div class="file-status-item">${i}</div>`).join('');
+  if (items.length) zone.classList.add('loaded'); else zone.classList.remove('loaded');
+}
+
+buildBtn.addEventListener('click', () => showDashboard('QC Report'));
+
+document.getElementById('reloadBtn').addEventListener('click', () => {
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('uploadScreen').style.display = 'flex';
+  KV_ALL = []; ST_ALL = []; ASP_ALL = []; SQLSRV_ALL = []; SQLDB_ALL = []; ACTIVE_SUBS = new Set();
+  document.getElementById('dropZoneMain').classList.remove('loaded');
+  document.getElementById('fileStatusList').innerHTML = '';
+  buildBtn.style.display = 'none';
+  errorMsg.textContent = '';
+  if (_chartKV)     { _chartKV.destroy();     _chartKV     = null; }
+  if (_chartST)     { _chartST.destroy();     _chartST     = null; }
+  if (_chartASP)    { _chartASP.destroy();    _chartASP    = null; }
+  if (_chartSQLSRV) { _chartSQLSRV.destroy(); _chartSQLSRV = null; }
+  if (_chartSQLDB)  { _chartSQLDB.destroy();  _chartSQLDB  = null; }
+});
+
+// ════════════════════════════════════════════════════════════
+// SHOW DASHBOARD
+// ════════════════════════════════════════════════════════════
+function showDashboard(label) {
+  document.getElementById('uploadScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'block';
+  document.getElementById('dashTitle').textContent =
+    (label && label !== 'QC Report' ? label + ' — ' : '') + 'Azure QC Dashboard';
+  document.getElementById('dashMeta').textContent =
+    `${KV_ALL.length + ST_ALL.length + ASP_ALL.length + SQLSRV_ALL.length + SQLDB_ALL.length} resources scanned`;
+  buildFilterBar();
+  renderAll();
+}
+
+const filteredKV     = () => ACTIVE_SUBS.size ? KV_ALL.filter(r     => ACTIVE_SUBS.has(r.subscription_name || r.subscription_id)) : KV_ALL;
+const filteredST     = () => ACTIVE_SUBS.size ? ST_ALL.filter(r     => ACTIVE_SUBS.has(r.subscription_name || r.subscription_id)) : ST_ALL;
+const filteredASP    = () => ACTIVE_SUBS.size ? ASP_ALL.filter(r    => ACTIVE_SUBS.has(r.subscription_name || r.subscription_id)) : ASP_ALL;
+const filteredSQLSRV = () => ACTIVE_SUBS.size ? SQLSRV_ALL.filter(r => ACTIVE_SUBS.has(r.subscription_name || r.subscription_id)) : SQLSRV_ALL;
+const filteredSQLDB  = () => ACTIVE_SUBS.size ? SQLDB_ALL.filter(r  => ACTIVE_SUBS.has(r.subscription_name || r.subscription_id)) : SQLDB_ALL;
+
+function renderAll() {
+  const kv = filteredKV(), st = filteredST(), asp = filteredASP();
+  const sqlsrv = filteredSQLSRV(), sqldb = filteredSQLDB();
+  renderKpis(kv, st, asp, sqlsrv, sqldb);
+  renderSummaryTable(kv, st, asp, sqlsrv, sqldb);
+  document.getElementById('sect-kv').style.display     = KV_ALL.length     ? '' : 'none';
+  document.getElementById('sect-st').style.display     = ST_ALL.length     ? '' : 'none';
+  document.getElementById('sect-asp').style.display    = ASP_ALL.length    ? '' : 'none';
+  document.getElementById('sect-sqlsrv').style.display = SQLSRV_ALL.length ? '' : 'none';
+  document.getElementById('sect-sqldb').style.display  = SQLDB_ALL.length  ? '' : 'none';
+  if (KV_ALL.length)     renderSection('kv',     kv,     KV_CHECKS,     'chartKV',     'kvTable',     'kvSummary',     'kvCheckCards');
+  if (ST_ALL.length)     renderSection('st',     st,     ST_CHECKS,     'chartST',     'stTable',     'stSummary',     'stCheckCards');
+  if (ASP_ALL.length)    renderSection('asp',    asp,    ASP_CHECKS,    'chartASP',    'aspTable',    'aspSummary',    'aspCheckCards');
+  if (SQLSRV_ALL.length) renderSection('sqlsrv', sqlsrv, SQLSRV_CHECKS, 'chartSQLSRV', 'sqlsrvTable', 'sqlsrvSummary', 'sqlsrvCheckCards');
+  if (SQLDB_ALL.length)  renderSection('sqldb',  sqldb,  SQLDB_CHECKS,  'chartSQLDB',  'sqldbTable',  'sqldbSummary',  'sqldbCheckCards');
+}
+
+// ════════════════════════════════════════════════════════════
+// FILTER BAR
+// ════════════════════════════════════════════════════════════
+function buildFilterBar() {
+  const allSubs = [...new Set(
+    [...KV_ALL, ...ST_ALL, ...ASP_ALL, ...SQLSRV_ALL, ...SQLDB_ALL]
+      .map(r => r.subscription_name || r.subscription_id)
+      .filter(Boolean)
+  )].sort();
+
+  const bar = document.getElementById('filterBar');
+  bar.innerHTML = '<span class="filter-label">Filters</span>';
+  if (!allSubs.length) return;
+
+  const group = document.createElement('div');
+  group.className = 'filter-group';
+  const countLabel = ACTIVE_SUBS.size === 0 ? 'All' : `${ACTIVE_SUBS.size}/${allSubs.length}`;
+  group.innerHTML = `
+    <button class="filter-btn">
+      📋 Subscription <span class="count">${countLabel}</span> <span class="arrow">▼</span>
+    </button>
+    <div class="filter-dropdown">
+      <div class="filter-actions">
+        <button data-action="all">Select All</button>
+        <button data-action="none">Select None</button>
+      </div>
+      <div class="filter-search"><input type="text" placeholder="Search…"></div>
+      <div class="filter-list"></div>
+    </div>`;
+
+  const list = group.querySelector('.filter-list');
+  allSubs.forEach(sub => {
+    const checked = ACTIVE_SUBS.size === 0 || ACTIVE_SUBS.has(sub);
+    const item = document.createElement('div');
+    item.className = 'filter-item';
+    item.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''} value="${sub}"><label title="${sub}">${sub}</label>`;
+    const cb = item.querySelector('input');
+    cb.addEventListener('change', onSubChange);
+    item.querySelector('label').addEventListener('click', e => { e.preventDefault(); cb.checked = !cb.checked; onSubChange(); });
+    list.appendChild(item);
+  });
+
+  group.querySelector('.filter-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    const wasOpen = group.classList.contains('open');
+    document.querySelectorAll('.filter-group').forEach(g => g.classList.remove('open'));
+    if (!wasOpen) group.classList.add('open');
+  });
+  group.querySelector('.filter-search input').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    list.querySelectorAll('.filter-item').forEach(item => {
+      item.style.display = item.querySelector('input').value.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+  group.querySelectorAll('.filter-actions button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const a = btn.dataset.action;
+      list.querySelectorAll('input[type=checkbox]').forEach(cb => {
+        if (cb.closest('.filter-item').style.display !== 'none') cb.checked = a === 'all';
+      });
+      onSubChange();
+    });
+  });
+  bar.appendChild(group);
+
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'filter-reset-all';
+  resetBtn.textContent = 'Reset All';
+  resetBtn.addEventListener('click', () => { ACTIVE_SUBS = new Set(); buildFilterBar(); renderAll(); });
+  bar.appendChild(resetBtn);
+
+  document.addEventListener('click', () => document.querySelectorAll('.filter-group').forEach(g => g.classList.remove('open')));
+  bar.addEventListener('click', e => e.stopPropagation());
+}
+
+function onSubChange() {
+  const group = document.querySelector('.filter-group');
+  if (!group) return;
+  const allSubs = [...new Set([...KV_ALL, ...ST_ALL, ...ASP_ALL, ...SQLSRV_ALL, ...SQLDB_ALL]
+    .map(r => r.subscription_name || r.subscription_id).filter(Boolean))];
+  const sel = new Set();
+  group.querySelectorAll('.filter-list input:checked').forEach(cb => sel.add(cb.value));
+  ACTIVE_SUBS = (sel.size === 0 || sel.size === allSubs.length) ? new Set() : sel;
+  group.querySelector('.count').textContent =
+    ACTIVE_SUBS.size === 0 ? 'All' : `${ACTIVE_SUBS.size}/${allSubs.length}`;
+  renderAll();
+}
+
+// ════════════════════════════════════════════════════════════
+// KPI ROW
+// ════════════════════════════════════════════════════════════
+function calcScore(records, checks) {
+  if (!records.length) return 0;
+  let pass = 0;
+  records.forEach(r => checks.forEach(c => { if (bv(r, c.col)) pass++; }));
+  return pct(pass, records.length * checks.length);
+}
+
+function renderKpis(kv, st, asp, sqlsrv, sqldb) {
+  const el = document.getElementById('kpis');
+  const kvScore     = calcScore(kv,     KV_CHECKS);
+  const stScore     = calcScore(st,     ST_CHECKS);
+  const aspScore    = calcScore(asp,    ASP_CHECKS);
+  const sqlsrvScore = calcScore(sqlsrv, SQLSRV_CHECKS);
+  const sqldbScore  = calcScore(sqldb,  SQLDB_CHECKS);
+  let totalPass = 0, totalChecks = 0;
+  kv.forEach(r     => KV_CHECKS.forEach(c     => { totalChecks++; if (bv(r, c.col)) totalPass++; }));
+  st.forEach(r     => ST_CHECKS.forEach(c     => { totalChecks++; if (bv(r, c.col)) totalPass++; }));
+  asp.forEach(r    => ASP_CHECKS.forEach(c    => { totalChecks++; if (bv(r, c.col)) totalPass++; }));
+  sqlsrv.forEach(r => SQLSRV_CHECKS.forEach(c => { totalChecks++; if (bv(r, c.col)) totalPass++; }));
+  sqldb.forEach(r  => SQLDB_CHECKS.forEach(c  => { totalChecks++; if (bv(r, c.col)) totalPass++; }));
+  const overall   = pct(totalPass, totalChecks);
+  const totalApps = asp.reduce((s, r) => s + (parseInt(r.apps_count, 10) || 0), 0);
+  el.innerHTML = `
+    <div class="kpi">
+      <div class="label">Total Resources</div>
+      <div class="value">${kv.length + st.length + asp.length + sqlsrv.length + sqldb.length}</div>
+      <div class="sub-value">${kv.length} KV · ${st.length} ST · ${asp.length} ASP · ${sqlsrv.length} SQL Srv · ${sqldb.length} SQL DB</div>
+    </div>
+    ${kv.length ? `<div class="kpi">
+      <div class="label">Key Vault Score</div>
+      <div class="value"><span class="badge ${badgeCls(kvScore)}">${kvScore}%</span></div>
+      <div class="sub-value">${kv.length} vaults · ${KV_CHECKS.length} checks</div>
+    </div>` : ''}
+    ${st.length ? `<div class="kpi">
+      <div class="label">Storage Score</div>
+      <div class="value"><span class="badge ${badgeCls(stScore)}">${stScore}%</span></div>
+      <div class="sub-value">${st.length} accounts · ${ST_CHECKS.length} checks</div>
+    </div>` : ''}
+    ${asp.length ? `<div class="kpi">
+      <div class="label">App Service Plan Score</div>
+      <div class="value"><span class="badge ${badgeCls(aspScore)}">${aspScore}%</span></div>
+      <div class="sub-value">${asp.length} plans · ${totalApps} apps hosted</div>
+    </div>` : ''}
+    ${sqlsrv.length ? `<div class="kpi">
+      <div class="label">SQL Server Score</div>
+      <div class="value"><span class="badge ${badgeCls(sqlsrvScore)}">${sqlsrvScore}%</span></div>
+      <div class="sub-value">${sqlsrv.length} servers · ${SQLSRV_CHECKS.length} checks</div>
+    </div>` : ''}
+    ${sqldb.length ? `<div class="kpi">
+      <div class="label">SQL Database Score</div>
+      <div class="value"><span class="badge ${badgeCls(sqldbScore)}">${sqldbScore}%</span></div>
+      <div class="sub-value">${sqldb.length} databases · ${SQLDB_CHECKS.length} checks</div>
+    </div>` : ''}
+    <div class="kpi">
+      <div class="label">Overall Compliance</div>
+      <div class="value"><span class="badge ${badgeCls(overall)}">${overall}%</span></div>
+      <div class="sub-value">${totalPass} / ${totalChecks} checks passed</div>
+    </div>`;
+}
+
+// ════════════════════════════════════════════════════════════
+// SUMMARY TABLE BY SUBSCRIPTION
+// ════════════════════════════════════════════════════════════
+function renderSummaryTable(kv, st, asp, sqlsrv, sqldb) {
+  const el = document.getElementById('summaryTable');
+  const allSubs = [...new Set([...kv, ...st, ...asp, ...sqlsrv, ...sqldb]
+    .map(r => r.subscription_name || r.subscription_id).filter(Boolean))].sort();
+  if (!allSubs.length) { el.innerHTML = ''; return; }
+
+  const showKv     = KV_ALL.length     > 0;
+  const showSt     = ST_ALL.length     > 0;
+  const showAsp    = ASP_ALL.length    > 0;
+  const showSQLSrv = SQLSRV_ALL.length > 0;
+  const showSQLDb  = SQLDB_ALL.length  > 0;
+
+  let html = `<thead><tr>
+    <th>Subscription</th>
+    ${showKv     ? '<th class="num">KV</th><th class="num">KV Score</th>' : ''}
+    ${showSt     ? '<th class="num">Storage</th><th class="num">ST Score</th>' : ''}
+    ${showAsp    ? '<th class="num">Plans</th><th class="num">Apps</th><th class="num">ASP Score</th>' : ''}
+    ${showSQLSrv ? '<th class="num">SQL Srv</th><th class="num">SQL Srv Score</th>' : ''}
+    ${showSQLDb  ? '<th class="num">SQL DB</th><th class="num">SQL DB Score</th>' : ''}
+    <th class="num">Overall</th>
+  </tr></thead><tbody>`;
+
+  allSubs.forEach(sub => {
+    const kvSub     = kv.filter(r     => (r.subscription_name || r.subscription_id) === sub);
+    const stSub     = st.filter(r     => (r.subscription_name || r.subscription_id) === sub);
+    const aspSub    = asp.filter(r    => (r.subscription_name || r.subscription_id) === sub);
+    const sqlsrvSub = sqlsrv.filter(r => (r.subscription_name || r.subscription_id) === sub);
+    const sqldbSub  = sqldb.filter(r  => (r.subscription_name || r.subscription_id) === sub);
+    const kvS       = calcScore(kvSub,     KV_CHECKS);
+    const stS       = calcScore(stSub,     ST_CHECKS);
+    const aspS      = calcScore(aspSub,    ASP_CHECKS);
+    const sqlsrvS   = calcScore(sqlsrvSub, SQLSRV_CHECKS);
+    const sqldbS    = calcScore(sqldbSub,  SQLDB_CHECKS);
+    const appsTotal = aspSub.reduce((s, r) => s + (parseInt(r.apps_count, 10) || 0), 0);
+    let tp = 0, tc = 0;
+    kvSub.forEach(r     => KV_CHECKS.forEach(c     => { tc++; if (bv(r, c.col)) tp++; }));
+    stSub.forEach(r     => ST_CHECKS.forEach(c     => { tc++; if (bv(r, c.col)) tp++; }));
+    aspSub.forEach(r    => ASP_CHECKS.forEach(c    => { tc++; if (bv(r, c.col)) tp++; }));
+    sqlsrvSub.forEach(r => SQLSRV_CHECKS.forEach(c => { tc++; if (bv(r, c.col)) tp++; }));
+    sqldbSub.forEach(r  => SQLDB_CHECKS.forEach(c  => { tc++; if (bv(r, c.col)) tp++; }));
+    const ov = pct(tp, tc);
+    html += `<tr>
+      <td><strong>${sub}</strong></td>
+      ${showKv     ? `<td class="num">${kvSub.length}</td><td class="num"><span class="sbadge lvl-${lvl(kvS)}">${kvS}%</span></td>` : ''}
+      ${showSt     ? `<td class="num">${stSub.length}</td><td class="num"><span class="sbadge lvl-${lvl(stS)}">${stS}%</span></td>` : ''}
+      ${showAsp    ? `<td class="num">${aspSub.length}</td><td class="num" style="color:var(--text-dim)">${appsTotal}</td><td class="num"><span class="sbadge lvl-${lvl(aspS)}">${aspS}%</span></td>` : ''}
+      ${showSQLSrv ? `<td class="num">${sqlsrvSub.length}</td><td class="num"><span class="sbadge lvl-${lvl(sqlsrvS)}">${sqlsrvS}%</span></td>` : ''}
+      ${showSQLDb  ? `<td class="num">${sqldbSub.length}</td><td class="num"><span class="sbadge lvl-${lvl(sqldbS)}">${sqldbS}%</span></td>` : ''}
+      <td class="num"><span class="sbadge lvl-${lvl(ov)}">${ov}%</span></td>
+    </tr>`;
+  });
+  el.innerHTML = html + '</tbody>';
+}
+
+// ════════════════════════════════════════════════════════════
+// SECTION (check cards + stacked bar chart + detail table)
+// ════════════════════════════════════════════════════════════
+function renderSection(type, records, checks, chartId, tableId, summaryId, cardsId) {
+  const score = calcScore(records, checks);
+  document.getElementById(summaryId).textContent =
+    `${records.length} resources · ${score}% compliant`;
+
+  // Check cards
+  document.getElementById(cardsId).innerHTML = checks.map(c => {
+    const pass = records.filter(r => bv(r, c.col)).length;
+    const p = pct(pass, records.length);
+    const l = lvl(p);
+    return `<div class="check-card" title="${c.desc}">
+      <div class="cc-label">${c.label}</div>
+      <div class="cc-value lvl-${l}">${p}%</div>
+      <div class="cc-sub">${pass} / ${records.length}</div>
+      <div class="cc-bar"><div class="cc-bar-fill lvl-${l}" style="width:${p}%"></div></div>
+    </div>`;
+  }).join('');
+
+  // Stacked bar chart (pass / fail per check)
+  if (type === 'kv'     && _chartKV)     { _chartKV.destroy();     _chartKV     = null; }
+  if (type === 'st'     && _chartST)     { _chartST.destroy();     _chartST     = null; }
+  if (type === 'asp'    && _chartASP)    { _chartASP.destroy();    _chartASP    = null; }
+  if (type === 'sqlsrv' && _chartSQLSRV) { _chartSQLSRV.destroy(); _chartSQLSRV = null; }
+  if (type === 'sqldb'  && _chartSQLDB)  { _chartSQLDB.destroy();  _chartSQLDB  = null; }
+
+  const passRates = checks.map(c => pct(records.filter(r => bv(r, c.col)).length, records.length));
+  const greenC = css('--green') || '#76d077';
+  const redC   = css('--red')   || '#d92329';
+  const borderC = css('--border') || '#2a2d3a';
+  const textC   = css('--text')   || '#e0e4f0';
+  const surf2   = css('--surface-2') || '#1e2130';
+  const textDim = css('--text-dim') || '#8892a4';
+
+  const tooltipStyle = {
+    backgroundColor: surf2, borderColor: borderC, borderWidth: 1,
+    titleColor: textC, bodyColor: textDim, cornerRadius: 8, padding: 10,
+    titleFont: { family: "'DM Sans',sans-serif", weight: 600 },
+    bodyFont:  { family: "'JetBrains Mono',monospace", size: 12 },
+  };
+
+  const chart = new Chart(document.getElementById(chartId).getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: checks.map(c => c.label),
+      datasets: [
+        {
+          label: 'Pass',
+          data: passRates,
+          backgroundColor: passRates.map(p =>
+            p >= 80 ? greenC + 'cc' : p >= 50 ? '#f59e42cc' : redC + '99'
+          ),
+          borderRadius: 4, barPercentage: .72,
+        },
+        {
+          label: 'Fail',
+          data: passRates.map(p => 100 - p),
+          backgroundColor: borderC + '88',
+          borderRadius: 4, barPercentage: .72,
+        },
+      ],
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: {
+          stacked: true, max: 100,
+          ticks: { callback: v => v + '%', font: { family: "'JetBrains Mono'", size: 10 } },
+          grid: { display: false },
+        },
+        y: {
+          stacked: true,
+          ticks: { font: { size: 11 }, color: textC },
+          grid: { display: false },
+        },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          ...tooltipStyle,
+          callbacks: { label: c => ` ${c.dataset.label}: ${c.parsed.x}%` },
+        },
+      },
+    },
+  });
+  if (type === 'kv')         _chartKV     = chart;
+  else if (type === 'st')    _chartST     = chart;
+  else if (type === 'asp')   _chartASP    = chart;
+  else if (type === 'sqlsrv')_chartSQLSRV = chart;
+  else                       _chartSQLDB  = chart;
+
+  renderDetailTable(tableId, records, checks, type);
+}
+
+// ════════════════════════════════════════════════════════════
+// DETAIL TABLE
+// ════════════════════════════════════════════════════════════
+function renderDetailTable(tableId, records, checks, type) {
+  const el = document.getElementById(tableId);
+
+  const rows = [...records].map(r => {
+    const pass = checks.filter(c => bv(r, c.col)).length;
+    return { r, pass, scorePct: pct(pass, checks.length) };
+  });
+
+  const extras = type === 'kv'
+    ? [{ k: 'sku', l: 'SKU' }, { k: 'location', l: 'Location' }]
+    : type === 'asp'
+      ? [{ k: 'os_type', l: 'OS' }, { k: 'sku_tier', l: 'Tier' }, { k: 'apps_count', l: 'Apps' }, { k: 'location', l: 'Location' }]
+      : type === 'sqlsrv'
+        ? [{ k: 'version', l: 'Version' }, { k: 'minimal_tls_version', l: 'TLS' }, { k: 'location', l: 'Location' }]
+        : type === 'sqldb'
+          ? [{ k: 'server_name', l: 'Server' }, { k: 'edition', l: 'Edition' }, { k: 'backup_storage_redundancy', l: 'Backup' }, { k: 'location', l: 'Location' }]
+          : [{ k: 'kind', l: 'Kind' }, { k: 'sku_name', l: 'SKU' }, { k: 'location', l: 'Location' }];
+
+  const columns = [
+    { key: 'subscription', label: 'Subscription', get: x => x.r.subscription_name || x.r.subscription_id || '' },
+    { key: 'resource_group', label: 'Resource Group', get: x => x.r.resource_group || '' },
+    { key: 'name', label: 'Name', get: x => x.r.name || '' },
+    ...extras.map(e => ({ key: e.k, label: e.l, get: x => x.r[e.k] || '' })),
+    ...checks.map(c => ({ key: c.col, label: c.label, get: x => (bv(x.r, c.col) ? 1 : 0), isCheck: true, desc: c.desc })),
+    { key: 'score', label: 'Score', get: x => x.pass, isScore: true },
+  ];
+
+  if (!DETAIL_SORT_STATE[tableId]) {
+    DETAIL_SORT_STATE[tableId] = { key: 'score', dir: 'asc' };
+  }
+
+  const sortState = DETAIL_SORT_STATE[tableId];
+  const activeCol = columns.find(c => c.key === sortState.key) || columns[columns.length - 1];
+
+  rows.sort((a, b) => {
+    const av = activeCol.get(a);
+    const bv2 = activeCol.get(b);
+    let cmp = 0;
+    if (typeof av === 'number' && typeof bv2 === 'number') {
+      cmp = av - bv2;
+    } else {
+      cmp = String(av).localeCompare(String(bv2), undefined, { sensitivity: 'base', numeric: true });
+    }
+    if (cmp === 0) {
+      cmp = a.pass - b.pass;
+    }
+    return sortState.dir === 'asc' ? cmp : -cmp;
+  });
+
+  const sortArrow = key => sortState.key === key ? (sortState.dir === 'asc' ? ' ▲' : ' ▼') : '';
+
+  let html = `<thead><tr>
+    <th class="col-s" data-sort-key="subscription" style="cursor:pointer">Subscription${sortArrow('subscription')}</th>
+    <th class="col-r" data-sort-key="resource_group" style="cursor:pointer">Resource Group${sortArrow('resource_group')}</th>
+    <th class="col-n" data-sort-key="name" style="cursor:pointer">Name${sortArrow('name')}</th>
+    ${extras.map(e => `<th data-sort-key="${e.k}" style="cursor:pointer">${e.l}${sortArrow(e.k)}</th>`).join('')}
+    ${checks.map(c => `<th data-sort-key="${c.col}" title="${c.desc}" style="text-align:center;cursor:pointer">${c.label}${sortArrow(c.col)}</th>`).join('')}
+    <th data-sort-key="score" style="text-align:center;cursor:pointer">Score${sortArrow('score')}</th>
+  </tr></thead><tbody>`;
+
+  rows.forEach(({ r, pass }) => {
+    const p = pct(pass, checks.length);
+    const l = lvl(p);
+    html += `<tr>
+      <td class="col-s" title="${r.subscription_name || ''}">${r.subscription_name || r.subscription_id || ''}</td>
+      <td class="col-r" title="${r.resource_group || ''}">${r.resource_group || ''}</td>
+      <td class="col-n" title="${r.name || ''}">${r.name || ''}</td>
+      ${extras.map(e => `<td style="color:var(--text-dim);font-size:11px">${r[e.k] || ''}</td>`).join('')}
+      ${checks.map(c => {
+        const ok = bv(r, c.col);
+        return `<td class="qc-cell ${ok ? 'pass' : 'fail'}" title="${c.desc}: ${ok ? 'PASS' : 'FAIL'}">${ok ? '✓' : '✗'}</td>`;
+      }).join('')}
+      <td style="text-align:center"><span class="sbadge lvl-${l}">${pass}/${checks.length}</span></td>
+    </tr>`;
+  });
+
+  el.innerHTML = html + '</tbody>';
+
+  el.querySelectorAll('th[data-sort-key]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.getAttribute('data-sort-key');
+      if (!key) return;
+      if (DETAIL_SORT_STATE[tableId].key === key) {
+        DETAIL_SORT_STATE[tableId].dir = DETAIL_SORT_STATE[tableId].dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        DETAIL_SORT_STATE[tableId] = { key, dir: 'asc' };
+      }
+      renderDetailTable(tableId, records, checks, type);
+    });
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// COLLAPSIBLE SECTIONS
+// ════════════════════════════════════════════════════════════
+function toggleSection(headerEl) {
+  headerEl.closest('.env-section').classList.toggle('collapsed');
+}
+
+// ════════════════════════════════════════════════════════════
+// THEME TOGGLE
+// ════════════════════════════════════════════════════════════
+function applyThemeToggle() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('dco-theme', next);
+  // Re-render charts so they pick up new CSS variable colours
+  if (KV_ALL.length || ST_ALL.length || ASP_ALL.length || SQLSRV_ALL.length || SQLDB_ALL.length) {
+    const kv = filteredKV(), st = filteredST(), asp = filteredASP();
+    const sqlsrv = filteredSQLSRV(), sqldb = filteredSQLDB();
+    if (KV_ALL.length)     renderSection('kv',     kv,     KV_CHECKS,     'chartKV',     'kvTable',     'kvSummary',     'kvCheckCards');
+    if (ST_ALL.length)     renderSection('st',     st,     ST_CHECKS,     'chartST',     'stTable',     'stSummary',     'stCheckCards');
+    if (ASP_ALL.length)    renderSection('asp',    asp,    ASP_CHECKS,    'chartASP',    'aspTable',    'aspSummary',    'aspCheckCards');
+    if (SQLSRV_ALL.length) renderSection('sqlsrv', sqlsrv, SQLSRV_CHECKS, 'chartSQLSRV', 'sqlsrvTable', 'sqlsrvSummary', 'sqlsrvCheckCards');
+    if (SQLDB_ALL.length)  renderSection('sqldb',  sqldb,  SQLDB_CHECKS,  'chartSQLDB',  'sqldbTable',  'sqldbSummary',  'sqldbCheckCards');
+  }
+}
+document.getElementById('themeToggle').addEventListener('click', applyThemeToggle);
+document.getElementById('themeToggleUpload').addEventListener('click', applyThemeToggle);
+
+// ════════════════════════════════════════════════════════════
+// DEMO DATA
+// ════════════════════════════════════════════════════════════
+document.getElementById('demoBtn').addEventListener('click', () => {
+  KV_ALL     = _genKvDemo();
+  ST_ALL     = _genStDemo();
+  ASP_ALL    = _genAspDemo();
+  SQLSRV_ALL = _genSqlSrvDemo();
+  SQLDB_ALL  = _genSqlDbDemo();
+  showDashboard('Demo');
+});
+
+function _lcg(seed) {
+  // Linear congruential generator for reproducible pseudo-random demo data
+  let s = seed;
+  return () => { s = (s * 1664525 + 1013904223) & 0xffffffff; return (s >>> 0) / 0xffffffff; };
+}
+
+function _genKvDemo() {
+  const rnd = _lcg(7);
+  const subs = [
+    'hub-prd-sub-supportingservices', 'dp-prd-sub', 'fh-prd-sub',
+    'cp-prd-sub', 'dp-dev-sub', 'fh-dev-sub',
+  ];
+  const rgs  = ['rg-mgmt', 'rg-data', 'rg-security', 'rg-app', 'rg-shared'];
+  const skus = ['standard', 'premium'];
+  const kvs  = [];
+  subs.forEach(sub => {
+    const n = 3 + Math.floor(rnd() * 4);
+    for (let i = 0; i < n; i++) {
+      const prd = sub.includes('prd') || sub === 'Synergrid aFRR';
+      kvs.push({
+        subscription_name: sub, subscription_id: 'demo-' + sub,
+        resource_group: rgs[Math.floor(rnd() * rgs.length)],
+        name: `kv-${sub.split('-')[0]}-${String(i + 1).padStart(2, '0')}`,
+        location: prd ? 'francecentral' : 'westeurope',
+        sku: skus[Math.floor(rnd() * skus.length)],
+        qc_soft_delete_enabled:         'True',
+        qc_purge_protection_enabled:    rnd() > 0.55 ? 'True' : 'False',
+        qc_rbac_authorization:          prd && rnd() > 0.35 ? 'True' : 'False',
+        qc_network_restricted:          prd && rnd() > 0.45 ? 'True' : 'False',
+        qc_private_endpoint_configured: prd && rnd() > 0.50 ? 'True' : 'False',
+        qc_soft_delete_90_days:         rnd() > 0.15 ? 'True' : 'False',
+        qc_has_tags:                    prd ? 'True' : rnd() > 0.40 ? 'True' : 'False',
+      });
+    }
+  });
+  return kvs;
+}
+
+function _genStDemo() {
+  const rnd = _lcg(42);
+  const subs = [
+    'hub-prd-sub-supportingservices', 'dp-prd-sub', 'fh-prd-sub',
+    'dp-dev-sub', 'fh-dev-sub', 'corp-prd-sub',
+  ];
+  const rgs   = ['rg-data', 'rg-archive', 'rg-logs', 'rg-backups', 'rg-shared'];
+  const kinds = ['StorageV2', 'BlobStorage', 'FileStorage'];
+  const skus  = ['Standard_LRS', 'Standard_GRS', 'Standard_ZRS'];
+  const sts   = [];
+  subs.forEach(sub => {
+    const n = 4 + Math.floor(rnd() * 5);
+    for (let i = 0; i < n; i++) {
+      const prd = sub.includes('prd');
+      sts.push({
+        subscription_name: sub, subscription_id: 'demo-' + sub,
+        resource_group: rgs[Math.floor(rnd() * rgs.length)],
+        name: `st${sub.replace(/[^a-z]/g, '').slice(0, 6)}${String(i + 1).padStart(2, '0')}`,
+        location: prd ? 'francecentral' : 'westeurope',
+        sku_name: skus[Math.floor(rnd() * skus.length)],
+        kind:     kinds[Math.floor(rnd() * kinds.length)],
+        qc_https_only:                 'True',
+        qc_tls_12_or_higher:           'True',
+        qc_no_public_blob_access:      rnd() > 0.30 ? 'True' : 'False',
+        qc_shared_key_disabled:        rnd() > 0.55 ? 'True' : 'False',
+        qc_network_restricted:         prd && rnd() > 0.45 ? 'True' : 'False',
+        qc_soft_delete_enabled:        rnd() > 0.20 ? 'True' : 'False',
+        qc_infrastructure_encryption:  rnd() > 0.70 ? 'True' : 'False',
+        qc_has_tags:                   prd ? 'True' : rnd() > 0.35 ? 'True' : 'False',
+      });
+    }
+  });
+  return sts;
+}
+
+function _genAspDemo() {
+  const rnd = _lcg(99);
+  const subs = [
+    'hub-prd-sub-supportingservices', 'dp-prd-sub', 'fh-prd-sub',
+    'cp-prd-sub', 'dp-dev-sub', 'fh-dev-sub', 'corp-prd-sub',
+  ];
+  const rgs   = ['rg-app', 'rg-api', 'rg-web', 'rg-func', 'rg-shared'];
+  const tiers = ['Free', 'Shared', 'Basic', 'Standard', 'PremiumV3', 'PremiumV3', 'Standard'];
+  const osTypes = ['Windows', 'Linux'];
+  const asps = [];
+  subs.forEach(sub => {
+    const n = 2 + Math.floor(rnd() * 4);
+    for (let i = 0; i < n; i++) {
+      const prd   = sub.includes('prd');
+      const tier  = tiers[Math.floor(rnd() * tiers.length)];
+      const isPaid = !['Free', 'Shared'].includes(tier);
+      const cap   = isPaid ? (1 + Math.floor(rnd() * 4)) : 1;
+      const apps  = isPaid ? Math.floor(rnd() * 6) : Math.floor(rnd() * 2);
+      const os    = osTypes[Math.floor(rnd() * osTypes.length)];
+      asps.push({
+        subscription_name: sub, subscription_id: 'demo-' + sub,
+        resource_group: rgs[Math.floor(rnd() * rgs.length)],
+        name: `asp-${sub.split('-')[0]}-${String(i + 1).padStart(2, '0')}`,
+        location: prd ? 'francecentral' : 'westeurope',
+        os_type:   os,
+        sku_tier:  tier,
+        apps_count: String(apps),
+        qc_not_free_shared:  isPaid               ? 'True' : 'False',
+        qc_min_2_instances:  cap >= 2             ? 'True' : 'False',
+        qc_zone_redundant:   prd && rnd() > 0.60  ? 'True' : 'False',
+        qc_has_apps:         apps > 0             ? 'True' : 'False',
+        qc_has_tags:         prd                  ? 'True' : rnd() > 0.40 ? 'True' : 'False',
+      });
+    }
+  });
+  return asps;
+}
+
+function _genSqlSrvDemo() {
+  const rnd  = _lcg(13);
+  const subs = [
+    'hub-prd-sub-supportingservices', 'dp-prd-sub', 'fh-prd-sub',
+    'cp-prd-sub', 'dp-dev-sub', 'fh-dev-sub', 'corp-prd-sub',
+  ];
+  const rgs  = ['rg-sql', 'rg-data', 'rg-db', 'rg-shared'];
+  const tlsv = ['1.2', '1.2', '1.2', '1.1', ''];
+  const srvs = [];
+  subs.forEach(sub => {
+    const n = 1 + Math.floor(rnd() * 3);
+    for (let i = 0; i < n; i++) {
+      const prd = sub.includes('prd');
+      const tls = tlsv[Math.floor(rnd() * tlsv.length)];
+      const aad = rnd() > 0.40;
+      const pub = prd && rnd() > 0.50;
+      const aud = rnd() > 0.25;
+      const days = aud ? (rnd() > 0.55 ? 90 + Math.floor(rnd() * 180) : 30) : 0;
+      const fw   = Math.floor(rnd() * 4);
+      const allowAzure = fw > 0 && rnd() > 0.60;
+      const pec  = prd && rnd() > 0.55 ? 1 : 0;
+      srvs.push({
+        subscription_name: sub, subscription_id: 'demo-' + sub,
+        resource_group: rgs[Math.floor(rnd() * rgs.length)],
+        name: `sql-${sub.split('-')[0]}-${String(i + 1).padStart(2, '0')}`,
+        location: prd ? 'francecentral' : 'westeurope',
+        version: '12.0',
+        minimal_tls_version: tls,
+        qc_aad_admin_configured:        aad              ? 'True' : 'False',
+        qc_public_access_disabled:      !pub             ? 'True' : 'False',
+        qc_tls_12_or_higher:            tls === '1.2'    ? 'True' : 'False',
+        qc_auditing_enabled:            aud              ? 'True' : 'False',
+        qc_auditing_90_days:            days >= 90       ? 'True' : 'False',
+        qc_no_azure_services_firewall:  !allowAzure      ? 'True' : 'False',
+        qc_private_endpoint_configured: pec > 0          ? 'True' : 'False',
+        qc_has_tags:                    prd              ? 'True' : rnd() > 0.40 ? 'True' : 'False',
+      });
+    }
+  });
+  return srvs;
+}
+
+function _genSqlDbDemo() {
+  const rnd  = _lcg(17);
+  const subs = [
+    'hub-prd-sub-supportingservices', 'dp-prd-sub', 'fh-prd-sub',
+    'cp-prd-sub', 'dp-dev-sub', 'fh-dev-sub', 'corp-prd-sub',
+  ];
+  const rgs       = ['rg-sql', 'rg-data', 'rg-db', 'rg-shared'];
+  const editions  = ['GeneralPurpose', 'BusinessCritical', 'Standard', 'Basic'];
+  const bsrs      = ['Geo', 'GeoZone', 'Zone', 'Local'];
+  const dbs = [];
+  subs.forEach(sub => {
+    const n = 2 + Math.floor(rnd() * 5);
+    for (let i = 0; i < n; i++) {
+      const prd   = sub.includes('prd');
+      const ed    = editions[Math.floor(rnd() * editions.length)];
+      const bsr   = bsrs[Math.floor(rnd() * bsrs.length)];
+      const pitr  = prd ? 7 + Math.floor(rnd() * 28) : Math.floor(rnd() * 7);
+      const ltr   = prd && rnd() > 0.55;
+      const atp   = prd && rnd() > 0.45;
+      const tde   = rnd() > 0.10;
+      const aud   = rnd() > 0.25;
+      const zone  = prd && rnd() > 0.65;
+      dbs.push({
+        subscription_name: sub, subscription_id: 'demo-' + sub,
+        resource_group: rgs[Math.floor(rnd() * rgs.length)],
+        server_name: `sql-${sub.split('-')[0]}-01`,
+        name: `db-${sub.split('-')[0]}-${String(i + 1).padStart(2, '0')}`,
+        location: prd ? 'francecentral' : 'westeurope',
+        edition: ed,
+        backup_storage_redundancy: bsr,
+        qc_tde_enabled:          tde         ? 'True' : 'False',
+        qc_backup_geo_redundant: ['Geo','GeoZone'].includes(bsr) ? 'True' : 'False',
+        qc_pitr_7_days:          pitr >= 7   ? 'True' : 'False',
+        qc_ltr_configured:       ltr         ? 'True' : 'False',
+        qc_db_auditing_enabled:  aud         ? 'True' : 'False',
+        qc_atp_enabled:          atp         ? 'True' : 'False',
+        qc_zone_redundant:       zone        ? 'True' : 'False',
+        qc_has_tags:             prd         ? 'True' : rnd() > 0.40 ? 'True' : 'False',
+      });
+    }
+  });
+  return dbs;
+}
+
+// ══════════════════════════════════════════════════════════════
+// STORAGE-BASED FILE LOADING
+// ══════════════════════════════════════════════════════════════
+function ensureStorageSpinner(){
+  let spinner=document.getElementById('storageSpinner');
+  if(spinner)return spinner;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  spinner=document.createElement('div');
+  spinner.id='storageSpinner';
+  spinner.innerHTML='<div class="spinner-ring"></div><div class="spinner-label">Loading data from Azure Storage...<div class="spinner-step" id="spinnerStep">Connecting...</div></div>';
+  uploadScreen.insertBefore(spinner, uploadScreen.firstElementChild ? uploadScreen.firstElementChild.nextSibling : null);
+  return spinner;
+}
+
+function setStorageSpinner(stepText){
+  const spinner=ensureStorageSpinner();
+  const stepEl=document.getElementById('spinnerStep');
+  if(stepEl&&stepText)stepEl.textContent=stepText;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      if(el.dataset.prevDisplay===undefined)el.dataset.prevDisplay=el.style.display||'';
+      el.style.display='none';
+    });
+  }
+
+  spinner.style.display='flex';
+}
+
+function hideStorageSpinner(){
+  const spinner=document.getElementById('storageSpinner');
+  if(spinner)spinner.style.display='none';
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      const prev=(el.dataset.prevDisplay!==undefined)?el.dataset.prevDisplay:'';
+      el.style.display=prev;
+      delete el.dataset.prevDisplay;
+    });
+  }
+}
+window.onFilesLoaded = function(loadedFiles) {
+  for (const file of loadedFiles) {
+    const csvFile = new File([file.content], file.name, { type: 'text/csv' });
+    handleFiles([csvFile]);
+  }
+  
+  hideFileUploadUI();
+};
+
+async function autoLoadFromStorage() {
+  const dashboardId = 'quality_checks';
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+
+  if (hasConnection) {
+    setStorageSpinner('Connecting...');
+  }
+
+  const loaded = await initStorageFileLoader(dashboardId, (step) => {
+    setStorageSpinner(step || 'Loading...');
+  });
+
+  if (!loaded) {
+    hideStorageSpinner();
+    showFileUploadUI();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+</script>
+<script src="../bin/table-sort.js"></script>
+</body>
+</html>
+

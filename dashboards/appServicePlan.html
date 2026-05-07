@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Azure App Service Plans Dashboard</title>
+<link rel="icon" type="image/png" href="../bin/delaware-dee-rgb.png">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../bin/dashboard-core.css">
+<link rel="stylesheet" href="../bin/dashboard-appServicePlan.css">
+<script src="../bin/storage-loader.js"></script>
+<script src="../bin/filter-bar-helper.js"></script>
+<script>
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+
+</head>
+<body class="ambient-glow">
+<div id="signalTooltip" class="signal-tip" role="tooltip" aria-hidden="true"></div>
+
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+  <h1>App Service Plans Dashboard</h1>
+  <p>Upload the files exported by <code>get_appserviceplans.py</code>. Drop the <strong>summary</strong> and/or <strong>timeseries</strong> CSV — one at a time or both at once.</p>
+  <div id="upload-zone" class="drop-zone" style="max-width:480px;margin:0 auto">
+    <div class="icon">📊</div>
+    <div class="label">Drop your CSV file(s) here</div>
+    <div class="hint">summary · timeseries · or both at once</div>
+  </div>
+  <input type="file" id="file-input" accept=".csv" multiple style="display:none"
+         title="Expected files: *_app_service_plans_summary_*.csv and/or *_app_service_plans_timeseries_*.csv">
+  <div id="upload-status" style="min-height:24px;margin:8px 0 2px;font-size:12px;color:var(--text-dim);text-align:center"></div>
+  <div style="margin-top:4px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+    <button class="btn btn--ghost" onclick="loadDemo()">Load Demo Data</button>
+  </div>
+</div>
+
+<div id="dashboardScreen">
+  <div class="topbar">
+    <h1><img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle"><span id="dashTitle">App Service Plans Dashboard</span></h1>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+      <button class="topbar-btn" id="reloadBtn">↩ Load another CSV</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+
+  <div class="filter-bar" id="filterBar"></div>
+  <div class="kpi-row" id="kpis"></div>
+
+  <div class="env-section" id="sect-signals">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>Cost Signals</h2>
+      <span class="env-summary" id="signalSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full">
+          <div class="card">
+            <div class="table-wrap"><table class="plan-table" id="signalTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="env-section" id="sect-detail">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>Plans Detail</h2>
+      <span class="env-summary" id="detailSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full">
+          <div class="card">
+            <div class="table-wrap"><table class="plan-table" id="detailTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="env-section" id="sect-cards">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>Plan Overview Cards</h2>
+      <span class="env-summary" id="cardsSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full">
+          <div class="card">
+            <div class="plan-grid" id="planGrid"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let SUMMARY_ROWS = [];
+let TS_ROWS      = [];
+let LOADED_FILES = { summary: null, timeseries: null };
+let AGG = [];
+let FILTER_OPTIONS = {};
+let ACTIVE_FILTERS = {};
+
+const FILTER_DEFS = [
+  { key: 'subscription', label: 'Subscription', icon: '📋' },
+  { key: 'location', label: 'Location', icon: '📍' },
+  { key: 'sku_tier', label: 'SKU Tier', icon: '⭐' },
+  { key: 'os_type', label: 'OS', icon: '💻' },
+  { key: 'cost_signal_category', label: 'Cost Signal', icon: '🏷️' },
+  { key: 'primary_workload_kind', label: 'Workload', icon: '⚙️' },
+];
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+function pf(v) { if (v === '' || v == null) return null; const n = parseFloat(v); return Number.isFinite(n) ? n : null; }
+function pi(v) { if (v === '' || v == null) return null; const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; }
+function fmtNum(v, d = 1) { return v == null ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }); }
+function fmtInt(v) { return v == null ? '—' : Number(v).toLocaleString('en-US'); }
+function pctCls(v) { if (v == null) return 'low'; if (v < 40) return 'low'; if (v < 75) return 'mid'; return 'high'; }
+function nvl(v, fallback = '') { return (v == null || v === '') ? fallback : v; }
+
+function parseCSV(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(';').map(h => h.trim());
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = lines[i].split(';');
+    const row = {};
+    headers.forEach((h, j) => { row[h] = (vals[j] || '').trim(); });
+    rows.push(row);
+  }
+  return rows;
+}
+
+function timestampToDateKey(ts) {
+  if (!ts) return '';
+  const ms = Date.parse(ts);
+  if (Number.isNaN(ms)) return '';
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function getDateRange(tsRows) {
+  let minMs = null;
+  let maxMs = null;
+  (tsRows || []).forEach(r => {
+    const ms = Date.parse(r.timestamp || '');
+    if (Number.isNaN(ms)) return;
+    if (minMs == null || ms < minMs) minMs = ms;
+    if (maxMs == null || ms > maxMs) maxMs = ms;
+  });
+  if (minMs == null || maxMs == null) return null;
+  return {
+    min: new Date(minMs).toISOString().slice(0, 10),
+    max: new Date(maxMs).toISOString().slice(0, 10),
+  };
+}
+
+function extractFilterOptions(summaryRows, tsRows) {
+  const subs = new Set(), locs = new Set(), tiers = new Set(), oss = new Set(), signals = new Set(), workloads = new Set();
+  (summaryRows || []).forEach(r => {
+    const sub = r.subscription_name || r.subscription_id;
+    if (sub) subs.add(sub);
+    if (r.location) locs.add(r.location);
+    if (r.sku_tier) tiers.add(r.sku_tier);
+    if (r.os_type) oss.add(r.os_type);
+    if (r.cost_signal_category) signals.add(r.cost_signal_category);
+    if (r.primary_workload_kind) workloads.add(r.primary_workload_kind);
+  });
+  return {
+    date_range: getDateRange(tsRows),
+    subscription: [...subs].sort(),
+    location: [...locs].sort(),
+    sku_tier: [...tiers].sort(),
+    os_type: [...oss].sort(),
+    cost_signal_category: [...signals].sort(),
+    primary_workload_kind: [...workloads].sort(),
+  };
+}
+
+function getFilteredSummaryRows() {
+  return SUMMARY_ROWS.filter(r => {
+    const sub = r.subscription_name || r.subscription_id || '';
+    if (ACTIVE_FILTERS.subscription?.size && !ACTIVE_FILTERS.subscription.has(sub)) return false;
+    if (ACTIVE_FILTERS.location?.size && !ACTIVE_FILTERS.location.has(r.location || '')) return false;
+    if (ACTIVE_FILTERS.sku_tier?.size && !ACTIVE_FILTERS.sku_tier.has(r.sku_tier || '')) return false;
+    if (ACTIVE_FILTERS.os_type?.size && !ACTIVE_FILTERS.os_type.has(r.os_type || '')) return false;
+    if (ACTIVE_FILTERS.cost_signal_category?.size && !ACTIVE_FILTERS.cost_signal_category.has(r.cost_signal_category || '')) return false;
+    if (ACTIVE_FILTERS.primary_workload_kind?.size && !ACTIVE_FILTERS.primary_workload_kind.has(r.primary_workload_kind || '')) return false;
+    return true;
+  });
+}
+
+function getFilteredTsRows(filteredPlanIds) {
+  return TS_ROWS.filter(r => {
+    if (filteredPlanIds && filteredPlanIds.size && !filteredPlanIds.has(r.plan_id || '')) return false;
+    if (ACTIVE_FILTERS.date_from || ACTIVE_FILTERS.date_to) {
+      const rowDate = timestampToDateKey(r.timestamp);
+      if (rowDate) {
+        if (ACTIVE_FILTERS.date_from && rowDate < ACTIVE_FILTERS.date_from) return false;
+        if (ACTIVE_FILTERS.date_to && rowDate > ACTIVE_FILTERS.date_to) return false;
+      }
+    }
+    return true;
+  });
+}
+
+function aggregate(summaryRows, tsRows) {
+  // Build plan map from summary rows (one row per plan)
+  const plans = new Map();
+  (summaryRows || []).forEach(r => {
+    const key = r.plan_id || `${r.subscription_id}|${r.resource_group}|${r.plan_name}`;
+    plans.set(key, {
+      key,
+      plan_id: r.plan_id || '',
+      plan_name: r.plan_name || '',
+      subscription_id: r.subscription_id || '',
+      subscription_name: r.subscription_name || '',
+      resource_group: r.resource_group || '',
+      location: r.location || '',
+      os_type: r.os_type || '',
+      sku_tier: r.sku_tier || '',
+      sku_name: r.sku_name || '',
+      sku_capacity: pi(r.sku_capacity),
+      zone_redundant: r.zone_redundant || '',
+      apps_count: pi(r.apps_count) || 0,
+      running_apps_count: pi(r.running_apps_count) || 0,
+      stopped_apps_count: pi(r.stopped_apps_count) || 0,
+      webapps_count: pi(r.webapps_count) || 0,
+      functionapps_count: pi(r.functionapps_count) || 0,
+      logicapps_count: pi(r.logicapps_count) || 0,
+      apps_per_worker: pf(r.apps_per_worker),
+      primary_workload_kind: r.primary_workload_kind || '',
+      workload_mix: r.workload_mix || '',
+      runtime_summary: r.runtime_summary || '',
+      cost_signal_category: r.cost_signal_category || '',
+      cost_signal_reason: r.cost_signal_reason || '',
+      cpu_avg_pct_window: pf(r.cpu_avg_pct_window),
+      cpu_p95_pct_window: pf(r.cpu_p95_pct_window),
+      cpu_peak_pct_window: pf(r.cpu_peak_pct_window),
+      memory_avg_pct_window: pf(r.memory_avg_pct_window),
+      memory_p95_pct_window: pf(r.memory_p95_pct_window),
+      memory_peak_pct_window: pf(r.memory_peak_pct_window),
+      http_queue_avg_window: pf(r.http_queue_avg_window),
+      http_queue_peak_window: pf(r.http_queue_peak_window),
+      bytes_received_total_window: pf(r.bytes_received_total_window),
+      bytes_sent_total_window: pf(r.bytes_sent_total_window),
+      hosted_app_names: r.hosted_app_names || '',
+      cpu_series: [],
+      memory_series: [],
+    });
+  });
+
+  // Enrich with timeseries sparklines
+  (tsRows || []).forEach(r => {
+    const plan = plans.get(r.plan_id || '');
+    if (!plan || !r.timestamp) return;
+    const cpu = pf(r.cpu_percentage);
+    const mem = pf(r.memory_percentage);
+    if (cpu != null) plan.cpu_series.push({ timestamp: r.timestamp, value: cpu });
+    if (mem != null) plan.memory_series.push({ timestamp: r.timestamp, value: mem });
+  });
+
+  return [...plans.values()].sort((a, b) => (b.apps_count - a.apps_count) || a.plan_name.localeCompare(b.plan_name));
+}
+
+// buildFilterBar moved to bin/filter-bar-helper.js
+
+// onDateFilterChange moved to bin/filter-bar-helper.js
+
+// onFilterCheck moved to bin/filter-bar-helper.js
+
+function sparkSVG(series, color) {
+  const vals = (series || []).map(p => p.value).filter(v => v != null);
+  if (vals.length < 2) return '<svg viewBox="0 0 100 36"></svg>';
+  const max = Math.max(...vals) || 1;
+  const min = Math.min(...vals);
+  const range = max - min || 1;
+  const w = 100, h = 36, pad = 2;
+  const points = vals.map((v, i) => {
+    const x = (i / (vals.length - 1)) * w;
+    const y = pad + ((1 - (v - min) / range) * (h - pad * 2));
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const polyline = points.join(' ');
+  const areaPoints = `0,${h} ${polyline} ${w},${h}`;
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polygon points="${areaPoints}" fill="${color}" opacity="0.12"/><polyline points="${polyline}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+function applyFilters() {
+  const filteredSummary = getFilteredSummaryRows();
+  const filteredPlanIds = new Set(filteredSummary.map(r => r.plan_id).filter(Boolean));
+  const filteredTs = getFilteredTsRows(filteredPlanIds);
+  AGG = aggregate(filteredSummary, filteredTs);
+  renderKPIs();
+  renderSignalTable();
+  renderDetailTable();
+  renderPlanCards();
+}
+
+function renderKPIs() {
+  const el = document.getElementById('kpis');
+  if (!AGG.length) {
+    el.innerHTML = '<div class="kpi"><div class="label">No data</div><div class="value">—</div></div>';
+    return;
+  }
+
+  const plans = AGG;
+  const apps = plans.reduce((s, p) => s + p.apps_count, 0);
+  const orphaned = plans.filter(p => p.cost_signal_category === 'orphaned').length;
+  const scaleIn = plans.filter(p => p.cost_signal_category === 'scale-in-candidate').length;
+  const oversized = plans.filter(p => p.cost_signal_category === 'oversized-premium').length;
+  const cpuP95 = plans.filter(p => p.cpu_p95_pct_window != null);
+  const memP95 = plans.filter(p => p.memory_p95_pct_window != null);
+  const avgCpuP95 = cpuP95.length ? cpuP95.reduce((s, p) => s + p.cpu_p95_pct_window, 0) / cpuP95.length : null;
+  const avgMemP95 = memP95.length ? memP95.reduce((s, p) => s + p.memory_p95_pct_window, 0) / memP95.length : null;
+
+  el.innerHTML = `
+    <div class="kpi"><div class="label">Plans</div><div class="value">${plans.length}</div></div>
+    <div class="kpi"><div class="label">Hosted Apps</div><div class="value">${apps}</div></div>
+    <div class="kpi"><div class="label">Orphaned Plans</div><div class="value">${orphaned}</div></div>
+    <div class="kpi"><div class="label">Scale-In Candidates</div><div class="value">${scaleIn}</div></div>
+    <div class="kpi"><div class="label">Oversized Premium</div><div class="value">${oversized}</div></div>
+    <div class="kpi"><div class="label">Avg CPU p95</div><div class="value">${fmtNum(avgCpuP95, 1)}%</div></div>
+    <div class="kpi"><div class="label">Avg Memory p95</div><div class="value">${fmtNum(avgMemP95, 1)}%</div></div>`;
+}
+
+function renderSignalTable() {
+  const tbl = document.getElementById('signalTable');
+  const summaryEl = document.getElementById('signalSummary');
+  if (!AGG.length) {
+    tbl.innerHTML = '';
+    if (summaryEl) summaryEl.textContent = 'No data';
+    return;
+  }
+
+  const bySignal = new Map();
+  AGG.forEach(p => {
+    const key = p.cost_signal_category || 'review';
+    if (!bySignal.has(key)) bySignal.set(key, { category: key, plans: 0, apps: 0, names: [] });
+    const item = bySignal.get(key);
+    item.plans += 1;
+    item.apps += p.apps_count;
+    item.names.push(p.plan_name);
+  });
+
+  const rows = [...bySignal.values()].sort((a, b) => b.plans - a.plans);
+  if (summaryEl) summaryEl.textContent = `${rows.length} signal bucket${rows.length !== 1 ? 's' : ''}`;
+  
+  // Get reason for first example of each signal
+  const signalReasons = new Map();
+  AGG.forEach(p => {
+    const key = p.cost_signal_category || 'review';
+    if (!signalReasons.has(key) && p.cost_signal_reason) {
+      signalReasons.set(key, p.cost_signal_reason);
+    }
+  });
+  
+  tbl.innerHTML = `
+    <thead><tr><th>Signal</th><th class="num">Plans</th><th class="num">Apps</th><th>Examples</th></tr></thead>
+    <tbody>${rows.map(r => {
+      const reason = signalReasons.get(r.category);
+      const tipAttr = reason ? ` data-reason="${esc(reason)}"` : '';
+      return `<tr><td><span class="signal signal-${esc(r.category)}"${tipAttr}>${esc(r.category)}</span></td><td class="num">${r.plans}</td><td class="num">${r.apps}</td><td>${esc(r.names.slice(0, 4).join(', '))}${r.names.length > 4 ? ' ...' : ''}</td></tr>`;
+    }).join('')}</tbody>`;
+}
+
+function renderDetailTable() {
+  const tbl = document.getElementById('detailTable');
+  const summaryEl = document.getElementById('detailSummary');
+  if (!AGG.length) {
+    tbl.innerHTML = '';
+    if (summaryEl) summaryEl.textContent = 'No data';
+    return;
+  }
+  const rows = [...AGG].sort((a, b) => {
+    const order = { orphaned: 0, 'stopped-only': 1, 'oversized-premium': 2, 'scale-in-candidate': 3, 'scale-up-review': 4, review: 5 };
+    return (order[a.cost_signal_category] ?? 9) - (order[b.cost_signal_category] ?? 9) || (b.apps_count - a.apps_count);
+  });
+
+  if (summaryEl) summaryEl.textContent = `${rows.length} plan${rows.length !== 1 ? 's' : ''} sorted by urgency`;
+
+  tbl.innerHTML = `
+    <thead><tr>
+      <th>Plan</th>
+      <th>SKU</th>
+      <th>OS</th>
+      <th class="num">Workers</th>
+      <th class="num">Apps</th>
+      <th class="num">CPU p95</th>
+      <th class="num">Mem p95</th>
+      <th class="num">HTTP Q Peak</th>
+      <th>Signal</th>
+    </tr></thead>
+    <tbody>${rows.map(p => `
+      <tr>
+        <td title="${esc(p.resource_group)} · ${esc(p.subscription_name || p.subscription_id)}"><strong>${esc(p.plan_name)}</strong><div style="font-size:11px;color:var(--text-dim)">${esc(p.resource_group)}</div></td>
+        <td>${esc([p.sku_tier, p.sku_name].filter(Boolean).join(' / '))}</td>
+        <td>${esc(p.os_type)}</td>
+        <td class="num">${fmtInt(p.sku_capacity)}</td>
+        <td class="num">${fmtInt(p.apps_count)}</td>
+        <td class="num">${fmtNum(p.cpu_p95_pct_window, 1)}%</td>
+        <td class="num">${fmtNum(p.memory_p95_pct_window, 1)}%</td>
+        <td class="num">${fmtNum(p.http_queue_peak_window, 2)}</td>
+        <td><span class="signal signal-${esc(p.cost_signal_category || 'review')}">${esc(p.cost_signal_category || 'review')}</span></td>
+      </tr>`).join('')}</tbody>`;
+}
+
+function renderPlanCards() {
+  const grid = document.getElementById('planGrid');
+  const summaryEl = document.getElementById('cardsSummary');
+  if (!AGG.length) {
+    grid.innerHTML = '<div class="no-metrics">No plans match the current filters.</div>';
+    if (summaryEl) summaryEl.textContent = 'No data';
+    return;
+  }
+
+  const shown = Math.min(AGG.length, 80);
+  if (summaryEl) summaryEl.textContent = `${shown} of ${AGG.length} plan${AGG.length !== 1 ? 's' : ''} shown`;
+
+  grid.innerHTML = AGG.slice(0, 80).map(p => {
+    const cpu = p.cpu_p95_pct_window;
+    const mem = p.memory_p95_pct_window;
+    const cpuW = Math.max(0, Math.min(100, cpu || 0));
+    const memW = Math.max(0, Math.min(100, mem || 0));
+
+    return `<div class="plan-card">
+      <div class="plan-head">
+        <div>
+          <div class="plan-title">${esc(p.plan_name)}</div>
+          <div class="plan-sub">${esc(p.resource_group)} · ${esc(p.location)} · ${esc(p.subscription_name || p.subscription_id)}</div>
+        </div>
+        <span class="signal signal-${esc(p.cost_signal_category || 'review')}" ${p.cost_signal_reason ? `data-reason="${esc(p.cost_signal_reason)}"` : ''}>${esc(p.cost_signal_category || 'review')}</span>
+      </div>
+
+      <div class="meta-row">
+        <span class="meta-pill">${esc(p.os_type || 'Unknown OS')}</span>
+        <span class="meta-pill">${esc([p.sku_tier, p.sku_name].filter(Boolean).join(' / ') || 'No SKU')}</span>
+        <span class="meta-pill">${fmtInt(p.sku_capacity)} worker(s)</span>
+        <span class="meta-pill">${fmtInt(p.apps_count)} app(s)</span>
+        <span class="meta-pill">${esc(nvl(p.primary_workload_kind, 'n/a'))}</span>
+      </div>
+
+      <div class="metric-row">
+        <div class="metric-label">CPU</div>
+        <div class="metric-track"><div class="metric-fill fill-${pctCls(cpu)}" style="width:${cpuW}%"></div></div>
+        <div class="metric-value">${fmtNum(cpu, 1)}%</div>
+      </div>
+      <div class="metric-row">
+        <div class="metric-label">MEM</div>
+        <div class="metric-track"><div class="metric-fill fill-${pctCls(mem)}" style="width:${memW}%"></div></div>
+        <div class="metric-value">${fmtNum(mem, 1)}%</div>
+      </div>
+
+      <div class="sparkline-area">
+        <div class="spark-box">
+          <div class="spark-title">CPU % trend</div>
+          ${sparkSVG(p.cpu_series, '#34d399')}
+        </div>
+        <div class="spark-box">
+          <div class="spark-title">Memory % trend</div>
+          ${sparkSVG(p.memory_series, '#0078d4')}
+        </div>
+      </div>
+
+      <div class="plan-note">${esc(nvl(p.cost_signal_reason, 'No recommendation.'))}</div>
+    </div>`;
+  }).join('');
+}
+
+function toggleSection(headerEl) {
+  headerEl.closest('.env-section').classList.toggle('collapsed');
+}
+
+function updateUploadStatus() {
+  const el = document.getElementById('upload-status');
+  const parts = [];
+  if (LOADED_FILES.summary)    parts.push(`✓ summary: ${LOADED_FILES.summary}`);
+  if (LOADED_FILES.timeseries) parts.push(`✓ timeseries: ${LOADED_FILES.timeseries}`);
+  el.textContent = parts.length ? parts.join('  ·  ') : '';
+  const zone = document.getElementById('upload-zone');
+  if (zone) {
+    const hint = zone.querySelector('.hint');
+    if (hint) {
+      if (LOADED_FILES.summary && LOADED_FILES.timeseries) hint.textContent = 'Both files loaded';
+      else if (LOADED_FILES.summary)    hint.textContent = 'Summary loaded — drop timeseries to add sparklines';
+      else if (LOADED_FILES.timeseries) hint.textContent = 'Timeseries loaded — drop summary for full view';
+      else hint.textContent = 'summary · timeseries · or both at once';
+    }
+    zone.style.borderColor = (LOADED_FILES.summary || LOADED_FILES.timeseries) ? 'var(--green)' : '';
+  }
+}
+
+function isSummaryFile(name)    { return /app_service_plans_summary/i.test(name); }
+function isTimeseriesFile(name) { return /app_service_plans_timeseries/i.test(name); }
+function isLegacyFile(name)     { return /app_service_plans/i.test(name) && !isSummaryFile(name) && !isTimeseriesFile(name); }
+
+function tryShowDashboard() {
+  if (!SUMMARY_ROWS.length && !TS_ROWS.length) return;
+  FILTER_OPTIONS = extractFilterOptions(SUMMARY_ROWS, TS_ROWS);
+  ACTIVE_FILTERS = {
+    date_from: FILTER_OPTIONS.date_range?.min || '',
+    date_to:   FILTER_OPTIONS.date_range?.max || '',
+    subscription: new Set(),
+    location: new Set(),
+    sku_tier: new Set(),
+    os_type: new Set(),
+    cost_signal_category: new Set(),
+    primary_workload_kind: new Set(),
+  };
+  showDashboard();
+}
+
+function showDashboard() {
+  document.getElementById('uploadScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'block';
+
+  const fn = LOADED_FILES.summary || LOADED_FILES.timeseries || '';
+  let customer = '';
+  if (fn) {
+    const m = fn.match(/^([A-Z0-9]+)_app_service_plans/i);
+    if (m) customer = m[1].toUpperCase();
+  }
+  document.getElementById('dashTitle').textContent = (customer ? customer + ' — ' : '') + 'App Service Plans Dashboard';
+
+  const metaParts = [];
+  if (LOADED_FILES.summary)    metaParts.push('✓ summary');
+  if (LOADED_FILES.timeseries) metaParts.push('✓ timeseries');
+  const dr = FILTER_OPTIONS.date_range;
+  if (dr?.min && dr?.max) metaParts.push(`${dr.min} → ${dr.max}`);
+  document.getElementById('dashMeta').textContent = metaParts.join('  ·  ');
+
+  buildFilterBar();
+  applyFilters();
+}
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const rows = parseCSV(e.target.result || '');
+      if (!rows.length) { alert('No data rows found in CSV: ' + file.name); return; }
+
+      if (isSummaryFile(file.name)) {
+        SUMMARY_ROWS = rows;
+        LOADED_FILES.summary = file.name;
+      } else if (isTimeseriesFile(file.name)) {
+        TS_ROWS = rows;
+        LOADED_FILES.timeseries = file.name;
+      } else if (isLegacyFile(file.name)) {
+        // Old single-file format — treat as both
+        SUMMARY_ROWS = rows;
+        TS_ROWS = rows;
+        LOADED_FILES.summary = file.name;
+        LOADED_FILES.timeseries = file.name;
+      } else {
+        const cols = Object.keys(rows[0] || {});
+        if (cols.includes('cost_signal_category') && !cols.includes('timestamp')) {
+          SUMMARY_ROWS = rows;
+          LOADED_FILES.summary = file.name;
+        } else if (cols.includes('cpu_percentage') && !cols.includes('cost_signal_category')) {
+          TS_ROWS = rows;
+          LOADED_FILES.timeseries = file.name;
+        } else {
+          alert('Cannot determine file type. Expected summary or timeseries file from get_appserviceplans.py.');
+          return;
+        }
+      }
+
+      updateUploadStatus();
+      tryShowDashboard();
+    } catch (err) {
+      alert('Error parsing CSV: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+const uploadZone = document.getElementById('upload-zone');
+const fileInput  = document.getElementById('file-input');
+uploadZone.addEventListener('click', () => fileInput.click());
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault(); uploadZone.classList.remove('dragover');
+  [...e.dataTransfer.files].forEach(f => handleFile(f));
+});
+fileInput.addEventListener('change', e => {
+  const files = [...e.target.files].filter(f => {
+    if (!/app_service_plans/i.test(f.name))
+      return confirm(`"${f.name}" doesn't look like an App Service Plans export.\nExpected a filename containing "app_service_plans".\n\nLoad it anyway?`);
+    return true;
+  });
+  files.forEach(f => handleFile(f));
+  fileInput.value = '';
+});
+
+document.getElementById('reloadBtn').addEventListener('click', () => {
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('uploadScreen').style.display = 'flex';
+  SUMMARY_ROWS = []; TS_ROWS = []; AGG = []; FILTER_OPTIONS = {}; ACTIVE_FILTERS = {};
+  LOADED_FILES = { summary: null, timeseries: null };
+  uploadZone.style.borderColor = '';
+  const hint = uploadZone.querySelector('.hint');
+  if (hint) hint.textContent = 'summary · timeseries · or both at once';
+  document.getElementById('upload-status').textContent = '';
+  fileInput.value = '';
+});
+
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('dco-theme', next);
+}
+document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+document.getElementById('themeToggleUpload').addEventListener('click', toggleTheme);
+
+// ══════════════════════════════════════════════════════════════
+// STORAGE-BASED FILE LOADING
+// ══════════════════════════════════════════════════════════════
+function ensureStorageSpinner(){
+  let spinner=document.getElementById('storageSpinner');
+  if(spinner)return spinner;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  spinner=document.createElement('div');
+  spinner.id='storageSpinner';
+  spinner.innerHTML='<div class="spinner-ring"></div><div class="spinner-label">Loading data from Azure Storage...<div class="spinner-step" id="spinnerStep">Connecting...</div></div>';
+  uploadScreen.insertBefore(spinner, uploadScreen.firstElementChild ? uploadScreen.firstElementChild.nextSibling : null);
+  return spinner;
+}
+
+function setStorageSpinner(stepText){
+  const spinner=ensureStorageSpinner();
+  const stepEl=document.getElementById('spinnerStep');
+  if(stepEl&&stepText)stepEl.textContent=stepText;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      if(el.dataset.prevDisplay===undefined)el.dataset.prevDisplay=el.style.display||'';
+      el.style.display='none';
+    });
+  }
+
+  spinner.style.display='flex';
+}
+
+function hideStorageSpinner(){
+  const spinner=document.getElementById('storageSpinner');
+  if(spinner)spinner.style.display='none';
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      const prev=(el.dataset.prevDisplay!==undefined)?el.dataset.prevDisplay:'';
+      el.style.display=prev;
+      delete el.dataset.prevDisplay;
+    });
+  }
+}
+window.onFilesLoaded = function(loadedFiles) {
+  const organized = organizeLoadedFiles(loadedFiles);
+  
+  if (organized.summaryContent) {
+    const summaryFile = new File([organized.summaryContent], 'summary.csv', { type: 'text/csv' });
+    handleFile(summaryFile);
+  }
+  
+  if (organized.timeseriesContent) {
+    const timeseriesFile = new File([organized.timeseriesContent], 'timeseries.csv', { type: 'text/csv' });
+    handleFile(timeseriesFile);
+  }
+  
+  hideFileUploadUI();
+};
+
+async function autoLoadFromStorage() {
+  const dashboardId = 'appServicePlans';
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+
+  if (hasConnection) {
+    setStorageSpinner('Connecting...');
+  }
+
+  const loaded = await initStorageFileLoader(dashboardId, (step) => {
+    setStorageSpinner(step || 'Loading...');
+  });
+
+  if (!loaded) {
+    hideStorageSpinner();
+    showFileUploadUI();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+
+// ══════════════════════════════════════════════════════════════
+// SIGNAL TOOLTIP
+// ══════════════════════════════════════════════════════════════
+(function () {
+  const tip = document.getElementById('signalTooltip');
+  let activeEl = null;
+
+  document.addEventListener('mouseover', e => {
+    const el = e.target.closest('.signal[data-reason]');
+    if (!el || el === activeEl) return;
+    activeEl = el;
+    const cat = el.textContent.trim();
+    tip.innerHTML = `<div class="tip-label">${esc(cat)}</div>${esc(el.dataset.reason)}`;
+    tip.setAttribute('aria-hidden', 'false');
+    tip.classList.add('visible');
+    positionTip(e);
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (tip.classList.contains('visible')) positionTip(e);
+  });
+
+  document.addEventListener('mouseout', e => {
+    if (!e.target.closest('.signal[data-reason]')) return;
+    activeEl = null;
+    tip.classList.remove('visible');
+    tip.setAttribute('aria-hidden', 'true');
+  });
+
+  function positionTip(e) {
+    const pad = 14;
+    let x = e.clientX + pad, y = e.clientY + pad;
+    const tw = tip.offsetWidth || 320, th = tip.offsetHeight || 60;
+    if (x + tw > window.innerWidth  - pad) x = e.clientX - tw - pad;
+    if (y + th > window.innerHeight - pad) y = e.clientY - th - pad;
+    tip.style.left = x + 'px';
+    tip.style.top  = y + 'px';
+  }
+}());
+
+function loadDemo() {
+  const summaryHdr = 'tenant_id;subscription_id;subscription_name;resource_group;plan_name;plan_id;location;kind;status;os_type;hosting_environment_name;sku_tier;sku_name;sku_size;sku_family;sku_capacity;maximum_number_of_workers;maximum_elastic_worker_count;target_worker_count;target_worker_size_id;per_site_scaling;elastic_scale_enabled;zone_redundant;is_spot;reserved;hyper_v;tags;apps_count;running_apps_count;stopped_apps_count;functionapps_count;webapps_count;logicapps_count;always_on_apps_count;https_only_apps_count;client_affinity_enabled_count;primary_workload_kind;workload_mix;runtime_summary;hosted_app_names;hosted_apps_json;apps_per_worker;cost_signal_category;cost_signal_reason;observed_sample_count;cpu_avg_pct_window;cpu_p95_pct_window;cpu_peak_pct_window;memory_avg_pct_window;memory_p95_pct_window;memory_peak_pct_window;http_queue_avg_window;http_queue_peak_window;disk_queue_avg_window;disk_queue_peak_window;bytes_received_total_window;bytes_sent_total_window';
+  const tsHdr = 'plan_id;timestamp;cpu_percentage;memory_percentage;http_queue_length;disk_queue_length;bytes_received;bytes_sent';
+  const summaryLines = [summaryHdr];
+  const tsLines = [tsHdr];
+  const now = Date.now();
+
+  const plans = [
+    {
+      subId: '1111', sub: 'prod-sub', rg: 'rg-prod-apps', name: 'asp-prod-pv3', id: '/subscriptions/1111/resourceGroups/rg-prod-apps/providers/Microsoft.Web/serverfarms/asp-prod-pv3', loc: 'westeurope', os: 'Linux', tier: 'PremiumV3', sku: 'P1v3', cap: 3,
+      apps: 5, running: 5, stopped: 0, web: 3, fun: 2, logic: 0, workload: 'webapp', mix: 'webapp:3, functionapp:2', signal: 'scale-in-candidate', reason: 'Multiple workers provisioned but low plan utilisation suggests scale-in review.',
+      cpuAvg: 21, cpuP95: 34, cpuPeak: 58, memAvg: 32, memP95: 47, memPeak: 66, hqAvg: 0.1, hqPeak: 0.8
+    },
+    {
+      subId: '1111', sub: 'prod-sub', rg: 'rg-prod-apps', name: 'asp-empty-dev', id: '/subscriptions/1111/resourceGroups/rg-prod-apps/providers/Microsoft.Web/serverfarms/asp-empty-dev', loc: 'westeurope', os: 'Windows', tier: 'Standard', sku: 'S1', cap: 1,
+      apps: 0, running: 0, stopped: 0, web: 0, fun: 0, logic: 0, workload: '', mix: '', signal: 'orphaned', reason: 'Plan hosts no apps and is a direct hosting-cost savings candidate.',
+      cpuAvg: 2, cpuP95: 4, cpuPeak: 7, memAvg: 6, memP95: 9, memPeak: 12, hqAvg: 0, hqPeak: 0
+    },
+    {
+      subId: '2222', sub: 'nonprod-sub', rg: 'rg-np-apps', name: 'asp-np-spiky', id: '/subscriptions/2222/resourceGroups/rg-np-apps/providers/Microsoft.Web/serverfarms/asp-np-spiky', loc: 'northeurope', os: 'Windows', tier: 'Standard', sku: 'S2', cap: 2,
+      apps: 4, running: 4, stopped: 0, web: 4, fun: 0, logic: 0, workload: 'webapp', mix: 'webapp:4', signal: 'scale-up-review', reason: 'Observed high peak utilisation or request queueing. Review SKU or worker count.',
+      cpuAvg: 49, cpuP95: 84, cpuPeak: 96, memAvg: 61, memP95: 88, memPeak: 94, hqAvg: 1.1, hqPeak: 14.2
+    }
+  ];
+
+  const N = 24;
+  for (const p of plans) {
+    // One summary row per plan
+    summaryLines.push([
+      '', p.subId, p.sub, p.rg, p.name, p.id, p.loc, 'app', 'Ready', p.os, '', p.tier, p.sku, '', '', p.cap,
+      p.cap * 10, 0, p.cap, 0, 'false', 'false', 'false', 'false', p.os === 'Linux' ? 'true' : 'false', 'false',
+      '',
+      p.apps, p.running, p.stopped, p.fun, p.web, p.logic, p.running, p.running, 0, p.workload, p.mix,
+      p.os === 'Linux' ? 'DOTNETCORE|8.0' : 'DOTNET|v6.0',
+      p.apps ? `${p.name}-app1 | ${p.name}-app2` : '',
+      p.apps ? '[{"name":"sample"}]' : '[]',
+      p.cap ? (p.apps / p.cap).toFixed(2) : '', p.signal, p.reason,
+      N, p.cpuAvg.toFixed(2), p.cpuP95.toFixed(2), p.cpuPeak.toFixed(2), p.memAvg.toFixed(2), p.memP95.toFixed(2), p.memPeak.toFixed(2),
+      p.hqAvg.toFixed(2), p.hqPeak.toFixed(2), '0.30', '1.50', '120000000', '98000000'
+    ].join(';'));
+
+    // Timeseries rows per plan
+    for (let i = 0; i < N; i++) {
+      const t = new Date(now - (N - i) * 3600000).toISOString().replace(/\.\d+Z/, 'Z');
+      const cpu = Math.max(0, p.cpuAvg + (Math.random() - 0.5) * (p.cpuPeak * 0.35));
+      const mem = Math.max(0, p.memAvg + (Math.random() - 0.5) * (p.memPeak * 0.25));
+      const hq  = Math.max(0, p.hqAvg  + (Math.random() - 0.5) * Math.max(0.3, p.hqPeak * 0.2));
+      const dq  = Math.max(0, 0.05 + Math.random() * 0.6);
+      const br  = Math.max(0, 500000  + Math.random() * 2000000);
+      const bs  = Math.max(0, 400000  + Math.random() * 1500000);
+      tsLines.push([p.id, t, cpu.toFixed(2), mem.toFixed(2), hq.toFixed(2), dq.toFixed(2), br.toFixed(0), bs.toFixed(0)].join(';'));
+    }
+  }
+
+  SUMMARY_ROWS = parseCSV(summaryLines.join('\n'));
+  TS_ROWS      = parseCSV(tsLines.join('\n'));
+  LOADED_FILES = { summary: 'app_service_plans_summary_DEMO.csv', timeseries: 'app_service_plans_timeseries_DEMO.csv' };
+  FILTER_OPTIONS = extractFilterOptions(SUMMARY_ROWS, TS_ROWS);
+  ACTIVE_FILTERS = {
+    date_from: FILTER_OPTIONS.date_range?.min || '',
+    date_to:   FILTER_OPTIONS.date_range?.max || '',
+    subscription: new Set(), location: new Set(), sku_tier: new Set(),
+    os_type: new Set(), cost_signal_category: new Set(), primary_workload_kind: new Set(),
+  };
+  AGG = aggregate(SUMMARY_ROWS, TS_ROWS);
+  showDashboard();
+}
+</script>
+<script src="../bin/table-sort.js"></script>
+</body>
+</html>
+
+

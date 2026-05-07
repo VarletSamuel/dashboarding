@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Azure Reserved Instances — RI Advisor Dashboard</title>
+<link rel="icon" type="image/png" href="../bin/delaware-dee-rgb.png">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../bin/dashboard-core.css">
+<link rel="stylesheet" href="../bin/dashboard-reservedInstances.css">
+<script src="../bin/storage-loader.js"></script>
+<script src="../bin/filter-bar-helper.js"></script>
+<script>
+// ── Theme: apply before paint to prevent flash ──
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+
+</head>
+<body class="ambient-glow">
+
+<!-- ── UPLOAD SCREEN ─────────────────────────────────────────────────────── -->
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode">
+    <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
+  </button>
+  <img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:44px">
+  <h1>Reserved Instance Advisor</h1>
+  <p>Upload the <strong>reservedInstances.csv</strong> exported from your Azure portal (Cost Management → Reservations). The file is parsed entirely in your browser — nothing is uploaded to any server.</p>
+  <div id="upload-zone" class="drop-zone">
+    <div class="icon">🏷️</div>
+    <div class="label">Drop your CSV file here</div>
+    <div class="hint">or click to browse</div>
+  </div>
+  <input type="file" id="file-input" accept=".csv"
+         title="Expected file: reservedInstances*.csv or *_reserved_instances_*.csv">
+  <div style="margin-top:8px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+    <button class="btn btn--ghost" onclick="loadDemo()">Load Demo Data</button>
+  </div>
+</div>
+
+<!-- ── DASHBOARD SCREEN ──────────────────────────────────────────────────── -->
+<div id="dashboardScreen">
+  <div class="topbar">
+    <h1>
+      <img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle">
+      <span id="dashTitle">Reserved Instance Advisor</span>
+    </h1>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode">
+        <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
+      </button>
+      <button class="topbar-btn" id="reloadBtn">↩ Load another CSV</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+
+  <!-- FILTER BAR -->
+  <div class="filter-bar" id="filterBar"></div>
+
+  <div class="kpi-row" id="kpis"></div>
+  <div class="dashboard" id="dashboard"></div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════════════
+// GLOBALS
+// ══════════════════════════════════════════════════════════════════════════
+let ALL_ROWS = [];
+let AGGREGATED = null;
+let FILTER_OPTIONS = {};
+let ACTIVE_FILTERS = {};
+
+const FILTER_DEFS = [
+  { key: 'type',   label: 'Type',   icon: '🗂️' },
+  { key: 'term',   label: 'Term',   icon: '📅' },
+  { key: 'region', label: 'Region', icon: '📍' },
+  { key: 'status', label: 'Status', icon: '🔵' },
+];
+
+const TYPE_META = {
+  VirtualMachines: { icon: '💻', bg: 'rgba(79,140,255,0.12)' },
+  AppService:       { icon: '🌐', bg: 'rgba(34,211,171,0.12)' },
+  PostgreSql:       { icon: '🐘', bg: 'rgba(167,139,250,0.12)' },
+  CosmosDb:         { icon: '🌌', bg: 'rgba(245,158,11,0.12)' },
+  Databricks:       { icon: '⚡', bg: 'rgba(239,83,80,0.12)' },
+  SqlDatabases:     { icon: '🗄️', bg: 'rgba(56,189,248,0.12)' },
+  RedHat:           { icon: '🎩', bg: 'rgba(239,83,80,0.12)' },
+  SapHana:          { icon: '🔷', bg: 'rgba(59,130,246,0.12)' },
+};
+
+// ══════════════════════════════════════════════════════════════════════════
+// CSV PARSING  (handles both comma and semicolon delimiters)
+// ══════════════════════════════════════════════════════════════════════════
+function parseCSV(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return [];
+
+  // Auto-detect delimiter from header
+  const headerLine = lines[0];
+  const delim = headerLine.includes(';') ? ';' : ',';
+
+  // Robust field parser (handles quoted fields with embedded commas)
+  function splitLine(line) {
+    const result = [];
+    let inQuote = false;
+    let cur = '';
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuote && line[i + 1] === '"') { cur += '"'; i++; }
+        else { inQuote = !inQuote; }
+      } else if (ch === delim && !inQuote) {
+        result.push(cur.trim());
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    result.push(cur.trim());
+    return result;
+  }
+
+  const headers = splitLine(headerLine);
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = splitLine(lines[i]);
+    const row = {};
+    headers.forEach((h, j) => { row[h] = (vals[j] || '').trim(); });
+    rows.push(row);
+  }
+  return rows;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// NORMALISE ROW KEYS  (CSV header → internal keys)
+// ══════════════════════════════════════════════════════════════════════════
+function normaliseRow(r) {
+  return {
+    name:            r['Name']                    || '',
+    reservation_id:  r['Reservation Id']          || '',
+    order_id:        r['Reservation order Id']    || '',
+    status:          r['Status']                  || '',
+    expiration_date: r['Expiration date']         || '',
+    purchase_date:   r['Purchase date']           || '',
+    term:            r['Term']                    || '',
+    scope:           r['Scope']                   || '',
+    scope_sub:       r['Scope subscription']      || '',
+    scope_rg:        r['Scope resource group']    || '',
+    type:            r['Type']                    || '',
+    product_name:    r['Product name']            || '',
+    region:          r['Region']                  || '',
+    quantity:        parseInt(r['Quantity'], 10)  || 0,
+    util_1d:         parseFloatSafe(r['Utilization % 1 Day']),
+    util_7d:         parseFloatSafe(r['Utilization % 7 Day']),
+    util_30d:        parseFloatSafe(r['Utilization % 30 Day']),
+    deep_link:       r['Deep link to reservation'] || '',
+  };
+}
+
+function parseFloatSafe(v) {
+  if (v === '' || v === undefined || v === null) return null;
+  const n = parseFloat(v);
+  return isNaN(n) ? null : n;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// FILTER OPTIONS
+// ══════════════════════════════════════════════════════════════════════════
+function extractFilterOptions(rows) {
+  const types = new Set(), terms = new Set(), regions = new Set(), statuses = new Set();
+  for (const r of rows) {
+    if (r.type)    types.add(r.type);
+    if (r.term)    terms.add(r.term);
+    if (r.region)  regions.add(r.region);
+    if (r.status)  statuses.add(r.status);
+  }
+  return {
+    type:   [...types].sort(),
+    term:   [...terms].sort(),
+    region: [...regions].sort(),
+    status: [...statuses].sort(),
+  };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// FILTERING
+// ══════════════════════════════════════════════════════════════════════════
+function getFilteredRows() {
+  return ALL_ROWS.filter(r => {
+    if (ACTIVE_FILTERS.type.size   && !ACTIVE_FILTERS.type.has(r.type))     return false;
+    if (ACTIVE_FILTERS.term.size   && !ACTIVE_FILTERS.term.has(r.term))     return false;
+    if (ACTIVE_FILTERS.region.size && !ACTIVE_FILTERS.region.has(r.region)) return false;
+    if (ACTIVE_FILTERS.status.size && !ACTIVE_FILTERS.status.has(r.status)) return false;
+    return true;
+  });
+}
+
+function applyFilters() {
+  AGGREGATED = aggregate(getFilteredRows());
+  renderKPIs();
+  renderDashboard();
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// FILTER BAR UI
+// ══════════════════════════════════════════════════════════════════════════
+// buildFilterBar and onFilterCheck moved to bin/filter-bar-helper.js
+
+// onFilterCheck moved to bin/filter-bar-helper.js
+
+// ══════════════════════════════════════════════════════════════════════════
+// AGGREGATION
+// ══════════════════════════════════════════════════════════════════════════
+function aggregate(rows) {
+  const typeMap = new Map();
+  for (const r of rows) {
+    const key = r.type || 'Unknown';
+    if (!typeMap.has(key)) typeMap.set(key, []);
+    typeMap.get(key).push(r);
+  }
+  const groups = [];
+  for (const [type, items] of typeMap) {
+    groups.push({ type, items });
+  }
+  // Sort by type name
+  groups.sort((a, b) => a.type.localeCompare(b.type));
+  return { groups };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// UTILITY
+// ══════════════════════════════════════════════════════════════════════════
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+function fmtTerm(term) {
+  if (term === 'P3Y') return { label: '3 year', cls: 'term-3y' };
+  if (term === 'P1Y') return { label: '1 year', cls: 'term-1y' };
+  return { label: term, cls: 'term-1y' };
+}
+
+function expiryInfo(dateStr) {
+  if (!dateStr) return { label: '—', cls: 'expiry--ok', days: null };
+  const ms = Date.parse(dateStr);
+  if (isNaN(ms)) return { label: dateStr, cls: 'expiry--ok', days: null };
+  const now = Date.now();
+  const days = Math.round((ms - now) / 86400000);
+  const label = formatDate(dateStr);
+  if (days < 0)   return { label: '⚠ Expired',             cls: 'expiry--expired', days };
+  if (days <= 30)  return { label: `⚠ ${label} (${days}d)`, cls: 'expiry--urgent',  days };
+  if (days <= 90)  return { label: `⚠ ${label} (${days}d)`, cls: 'expiry--soon',    days };
+  if (days <= 180) return { label: `${label} (${days}d)`,   cls: 'expiry--caution', days };
+  return { label, cls: 'expiry--ok', days };
+}
+
+function formatDate(isoStr) {
+  if (!isoStr) return '—';
+  const d = new Date(isoStr);
+  if (isNaN(d)) return isoStr;
+  return d.toISOString().slice(0, 10);
+}
+
+// For RI: high util = good, low util = waste
+function utilClass(pct) {
+  if (pct === null) return 'na';
+  if (pct >= 95)   return 'high';
+  if (pct >= 80)   return 'mid';
+  if (pct >= 50)   return 'low';
+  return 'verylow';
+}
+
+function fmtUtil(v) { return v !== null ? v.toFixed(0) + '%' : '—'; }
+
+function utilBar(pct, period) {
+  const cls = utilClass(pct);
+  const w = pct !== null ? Math.min(pct, 100) : 0;
+  return `<div class="util-row">
+    <div class="util-period">${period}</div>
+    <div class="util-track"><div class="util-fill util-fill--${cls}" style="width:${w}%"></div></div>
+    <div class="util-pct util-pct--${cls}">${fmtUtil(pct)}</div>
+  </div>`;
+}
+
+function statusDot(status) {
+  const s = (status || '').toLowerCase();
+  const cls = s === 'succeeded' ? 'succeeded' : s === 'failed' ? 'failed' : 'other';
+  return `<span class="status-dot status-dot--${cls}">${esc(status)}</span>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// KPIs
+// ══════════════════════════════════════════════════════════════════════════
+function renderKPIs() {
+  const el = document.getElementById('kpis');
+  if (!AGGREGATED || !AGGREGATED.groups.length) {
+    el.innerHTML = '<div class="kpi"><div class="label">No data</div><div class="value">—</div></div>';
+    return;
+  }
+
+  const allItems = AGGREGATED.groups.flatMap(g => g.items);
+  const total = allItems.length;
+  const totalQty = allItems.reduce((s, r) => s + r.quantity, 0);
+
+  const now = Date.now();
+  const expiringSoon = allItems.filter(r => {
+    if (!r.expiration_date) return false;
+    const ms = Date.parse(r.expiration_date);
+    if (isNaN(ms)) return false;
+    const days = (ms - now) / 86400000;
+    return days >= 0 && days <= 90;
+  }).length;
+
+  const with30d = allItems.filter(r => r.util_30d !== null);
+  const avg30d = with30d.length
+    ? with30d.reduce((s, r) => s + r.util_30d, 0) / with30d.length
+    : null;
+
+  const lowUtil = allItems.filter(r => r.util_30d !== null && r.util_30d < 80).length;
+  const expiredCount = allItems.filter(r => {
+    if (!r.expiration_date) return false;
+    return Date.parse(r.expiration_date) < now;
+  }).length;
+
+  const avg30dCls = avg30d === null ? '' : avg30d >= 95 ? 'u-high' : avg30d >= 80 ? 'u-mid' : 'u-low';
+  const u = (c, v) => `<div class="kpi"><div class="label">${c}</div><div class="value">${v}</div></div>`;
+
+  el.innerHTML = [
+    u('Total Reservations', total),
+    u('Total Quantity', totalQty),
+    `<div class="kpi"><div class="label">Avg Util. (30d)</div><div class="value ${avg30dCls}" style="font-size:22px">${avg30d !== null ? avg30d.toFixed(1) + '%' : '—'}</div></div>`,
+    `<div class="kpi"><div class="label">Expiring ≤ 90 days</div><div class="value" style="color:${expiringSoon > 0 ? 'var(--orange)' : 'var(--text)'}">${expiringSoon}</div></div>`,
+    `<div class="kpi"><div class="label">Low Util. &lt; 80% (30d)</div><div class="value" style="color:${lowUtil > 0 ? 'var(--red)' : 'var(--text)'}">${lowUtil}</div></div>`,
+    expiredCount > 0 ? `<div class="kpi"><div class="label">Expired</div><div class="value" style="color:var(--red)">${expiredCount}</div></div>` : '',
+  ].join('');
+}
+
+// Add utilization class aliases used in KPI row
+const style = document.createElement('style');
+style.textContent = `.u-high{color:var(--green)}.u-mid{color:var(--accent)}.u-low{color:var(--orange)}.u-verylow{color:var(--red)}`;
+document.head.appendChild(style);
+
+// ══════════════════════════════════════════════════════════════════════════
+// DASHBOARD RENDER
+// ══════════════════════════════════════════════════════════════════════════
+function toggleTypeSection(headerEl) {
+  headerEl.closest('.type-section').classList.toggle('collapsed');
+}
+
+function renderDashboard() {
+  const container = document.getElementById('dashboard');
+  if (!AGGREGATED || !AGGREGATED.groups.length) {
+    container.innerHTML = '<div class="row row-full"><div class="card ri-empty">No reservations match the current filters.</div></div>';
+    return;
+  }
+
+  let html = '';
+  AGGREGATED.groups.forEach((group, idx) => {
+    const meta = TYPE_META[group.type] || { icon: '🏷️', bg: 'rgba(136,146,168,0.12)' };
+    const totalQty = group.items.reduce((s, r) => s + r.quantity, 0);
+
+    html += `<div class="type-section" style="animation-delay:${idx * 0.06}s">`;
+    html += `<div class="type-header" onclick="toggleTypeSection(this)">
+      <span class="type-icon">▼</span>
+      <div class="type-badge" style="background:${meta.bg}">${meta.icon}</div>
+      <h2>${esc(group.type)}</h2>
+      <span class="type-summary">${group.items.length} reservation${group.items.length !== 1 ? 's' : ''} · ${totalQty} total qty</span>
+    </div>`;
+
+    html += '<div class="type-body">';
+    html += `<table class="ri-table">
+      <thead>
+        <tr>
+          <th>Name / Product</th>
+          <th>Qty</th>
+          <th>Term</th>
+          <th class="col-region">Region</th>
+          <th class="col-scope">Scope</th>
+          <th class="col-status">Status</th>
+          <th>Expiry</th>
+          <th>Utilisation (1d / 7d / 30d)</th>
+          <th style="text-align:right">Portal</th>
+        </tr>
+      </thead>
+      <tbody>`;
+
+    group.items.forEach(r => {
+      const termInfo = fmtTerm(r.term);
+      const expiry = expiryInfo(r.expiration_date);
+
+      html += `<tr>
+        <td>
+          <div class="ri-name" title="${esc(r.name)}">${esc(r.name)}</div>
+          <div class="ri-product" title="${esc(r.product_name)}">${esc(r.product_name)}</div>
+        </td>
+        <td><span class="ri-qty">${r.quantity}</span></td>
+        <td><span class="term-badge ${termInfo.cls}">${esc(termInfo.label)}</span></td>
+        <td class="col-region"><span class="scope-info">${esc(r.region)}</span></td>
+        <td class="col-scope"><span class="scope-info" title="${esc(r.scope_sub)}">${esc(r.scope)}</span></td>
+        <td class="col-status">${statusDot(r.status)}</td>
+        <td><span class="expiry-badge ${expiry.cls}">${esc(expiry.label)}</span></td>
+        <td>
+          <div class="util-bars">
+            ${utilBar(r.util_1d, '1d')}
+            ${utilBar(r.util_7d, '7d')}
+            ${utilBar(r.util_30d, '30d')}
+          </div>
+        </td>
+        <td style="text-align:right">
+          ${r.deep_link ? `<a class="portal-link" href="${esc(r.deep_link)}" target="_blank" rel="noopener noreferrer">↗ Open</a>` : '—'}
+        </td>
+      </tr>`;
+    });
+
+    html += `</tbody></table>`;
+
+    // Legend
+    html += `<div class="util-legend">
+      <span style="font-size:11px;color:var(--text-dim);font-weight:600;margin-right:4px">Utilisation:</span>
+      <div class="util-legend-item"><div class="util-legend-dot" style="background:var(--green)"></div> ≥ 95% — Excellent</div>
+      <div class="util-legend-item"><div class="util-legend-dot" style="background:var(--accent)"></div> 80–94% — Good</div>
+      <div class="util-legend-item"><div class="util-legend-dot" style="background:var(--orange)"></div> 50–79% — Low</div>
+      <div class="util-legend-item"><div class="util-legend-dot" style="background:var(--red)"></div> &lt; 50% — Very low</div>
+    </div>`;
+
+    html += '</div></div>';
+  });
+
+  container.innerHTML = html;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// SHOW DASHBOARD
+// ══════════════════════════════════════════════════════════════════════════
+function showDashboard(filename) {
+  document.getElementById('uploadScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'block';
+
+  let customer = '';
+  const m = (filename || '').match(/reservedInstances[_-]?(\w*)\.csv/i);
+  if (m && m[1]) customer = m[1];
+  document.getElementById('dashTitle').textContent =
+    (customer ? customer + ' — ' : '') + 'Reserved Instance Advisor';
+
+  document.getElementById('dashMeta').textContent =
+    `${ALL_ROWS.length} reservation${ALL_ROWS.length !== 1 ? 's' : ''} loaded`;
+
+  buildFilterBar();
+  renderKPIs();
+  renderDashboard();
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// FILE HANDLING
+// ══════════════════════════════════════════════════════════════════════════
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const raw = parseCSV(e.target.result);
+      if (!raw.length) { alert('No data rows found in CSV.'); return; }
+      ALL_ROWS = raw.map(normaliseRow).filter(r => r.name || r.reservation_id);
+      if (!ALL_ROWS.length) { alert('Could not parse reservations from this file. Make sure it is the reservedInstances CSV exported from Azure Cost Management.'); return; }
+      FILTER_OPTIONS = extractFilterOptions(ALL_ROWS);
+      ACTIVE_FILTERS = { type: new Set(), term: new Set(), region: new Set(), status: new Set() };
+      AGGREGATED = aggregate(ALL_ROWS);
+      showDashboard(file.name);
+    } catch (err) {
+      alert('Error parsing CSV: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+const zone = document.getElementById('upload-zone');
+const fileInput = document.getElementById('file-input');
+zone.addEventListener('click', () => fileInput.click());
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', e => {
+  e.preventDefault(); zone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e => {
+  if (!e.target.files.length) return;
+  const f = e.target.files[0];
+  if (!/reservedinstances|reserved_instances/i.test(f.name) &&
+      !confirm(`"${f.name}" doesn't look like a Reserved Instances export.\nExpected a filename containing "reservedInstances" or "reserved_instances".\n\nLoad it anyway?`)) {
+    fileInput.value = ''; return;
+  }
+  handleFile(f);
+  fileInput.value = '';
+});
+
+document.getElementById('reloadBtn').addEventListener('click', () => {
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('uploadScreen').style.display = 'flex';
+  ALL_ROWS = [];
+  AGGREGATED = null;
+  FILTER_OPTIONS = {};
+  ACTIVE_FILTERS = {};
+  fileInput.value = '';
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// DEMO DATA  (mirrors reservedInstances.csv structure)
+// ══════════════════════════════════════════════════════════════════════════
+function loadDemo() {
+  const csvText = [
+    'Name,Reservation Id,Reservation order Id,Status,Expiration date,Purchase date,Term,Scope,Scope subscription,Scope resource group,Type,Product name,Region,Quantity,Utilization % 1 Day,Utilization % 7 Day,Utilization % 30 Day,Deep link to reservation',
+    'AppSvc_02-01-2024_13-27,c977fc8e-eb27-4d10-9b17-10f94286dec2,26390366-96ea-4d17-b8f4-b3b5e92aba61,Succeeded,2027-02-01T12:31:33Z,2024-02-01T12:27:58Z,P3Y,Shared,All subscriptions,All resource groups,AppService,App_Service_I1_v2_windows,westeurope,4,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/26390366-96ea-4d17-b8f4-b3b5e92aba61/reservations/c977fc8e-eb27-4d10-9b17-10f94286dec2/overview',
+    'AppSvc_05-15-2024_09-32,39b6c719-4226-4990-a303-e6fbffc021eb,97fb491e-2930-4514-bfc3-68e5aaf11cdb,Succeeded,2027-05-15T07:42:03Z,2024-05-15T07:39:29Z,P3Y,Shared,All subscriptions,All resource groups,AppService,App_Service_I1_v2_windows,westeurope,2,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/97fb491e-2930-4514-bfc3-68e5aaf11cdb/reservations/39b6c719-4226-4990-a303-e6fbffc021eb/overview',
+    'AppSvc_05-15-2024_09-33,543676d0-344d-4c82-b7f4-9b254c98fd97,13b39584-1afc-4006-a177-051026ae3816,Succeeded,2027-05-15T07:41:40Z,2024-05-15T07:39:30Z,P3Y,Shared,All subscriptions,All resource groups,AppService,App_Service_I1_v2_windows,westeurope,2,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/13b39584-1afc-4006-a177-051026ae3816/reservations/543676d0-344d-4c82-b7f4-9b254c98fd97/overview',
+    'AppSvc_05-15-2024_09-33 (2),622f79c5-a32d-46ca-bf9d-0223ef52b619,528bbdf5-826e-4b01-80f2-4811f852a973,Succeeded,2027-05-15T07:41:45Z,2024-05-15T07:39:30Z,P3Y,Shared,All subscriptions,All resource groups,AppService,App_Service_I1_v2_windows,westeurope,2,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/528bbdf5-826e-4b01-80f2-4811f852a973/reservations/622f79c5-a32d-46ca-bf9d-0223ef52b619/overview',
+    'AppSvc_05-15-2024_09-34,e41e5891-8e79-4f72-a3e0-99a99df8466f,071292e8-bcbe-40c6-a7cc-d39b851289a6,Succeeded,2027-05-15T07:42:13Z,2024-05-15T07:39:30Z,P3Y,Shared,All subscriptions,All resource groups,AppService,App_Service_I1_v2_windows,westeurope,2,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/071292e8-bcbe-40c6-a7cc-d39b851289a6/reservations/e41e5891-8e79-4f72-a3e0-99a99df8466f/overview',
+    'AppSvc_05-15-2024_09-33 (3),a7f9168c-fee0-4aa6-b9b6-fbb259aed1c6,056832e3-d946-4779-a99a-a7643b15c6a4,Succeeded,2027-05-15T07:41:45Z,2024-05-15T07:39:30Z,P3Y,Shared,All subscriptions,All resource groups,AppService,App_Service_I1_v2_windows,westeurope,2,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/056832e3-d946-4779-a99a-a7643b15c6a4/reservations/a7f9168c-fee0-4aa6-b9b6-fbb259aed1c6/overview',
+    'Postgresql_RI_02-01-2024_14-01,66d443bd-c0b1-4af1-a4aa-69989226144e,66994078-a6c4-42ac-80b4-ee76b7e9ba10,Succeeded,2027-02-01T13:04:28Z,2024-02-01T13:02:35Z,P3Y,Shared,All subscriptions,All resource groups,PostgreSql,AzureDB_PostgreSQL_Hyperscale_Coordinator_Node_vCore,westeurope,4,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/66994078-a6c4-42ac-80b4-ee76b7e9ba10/reservations/66d443bd-c0b1-4af1-a4aa-69989226144e/overview',
+    'Postgresql_RI_02-01-2024_14-01 (2),d7bb078d-b52f-4a2d-a62a-ea222d260c9b,9f7603a7-de35-4f78-8a55-4268c7ff0e08,Succeeded,2027-02-01T13:05:53Z,2024-02-01T13:02:35Z,P3Y,Shared,All subscriptions,All resource groups,PostgreSql,AzureDB_PostgreSQL_Hyperscale_Worker_Node_vCore,westeurope,8,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/9f7603a7-de35-4f78-8a55-4268c7ff0e08/reservations/d7bb078d-b52f-4a2d-a62a-ea222d260c9b/overview',
+    'VM_RI_05-08-2025_13-40,97a3aeea-9e16-4907-9dfb-7f44f20d628f,7be34760-3ea6-4212-81a5-a00e847f295e,Succeeded,2028-05-08T11:42:34Z,2025-05-08T11:41:12Z,P3Y,Shared,All subscriptions,All resource groups,VirtualMachines,Standard_D16s_v5,westeurope,4,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/7be34760-3ea6-4212-81a5-a00e847f295e/reservations/97a3aeea-9e16-4907-9dfb-7f44f20d628f/overview',
+    'VM_RI_05-08-2025_13-45,8a549fd3-0d8f-4939-b696-7c092aef7f87,bbaa74ee-e7cc-45aa-b017-29647d6bfde2,Succeeded,2028-05-08T11:46:45Z,2025-05-08T11:45:49Z,P3Y,Shared,All subscriptions,All resource groups,VirtualMachines,Standard_D2s_v5,westeurope,16,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/bbaa74ee-e7cc-45aa-b017-29647d6bfde2/reservations/8a549fd3-0d8f-4939-b696-7c092aef7f87/overview',
+    'VM_RI_05-08-2025_13-48,f4383727-8662-496e-b384-52f6c99d46fa,535a79a6-c326-4f83-9df9-3b0f555221ce,Succeeded,2028-05-08T11:50:42Z,2025-05-08T11:49:44Z,P3Y,Shared,All subscriptions,All resource groups,VirtualMachines,Standard_D4s_v5,westeurope,4,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/535a79a6-c326-4f83-9df9-3b0f555221ce/reservations/f4383727-8662-496e-b384-52f6c99d46fa/overview',
+    'VM_RI_05-08-2025_13-58,e4c24b06-4d73-433e-bad3-7cb6ad15ae63,22075636-40ec-4c62-8063-17bb60b932d7,Succeeded,2028-05-08T12:00:08Z,2025-05-08T11:59:07Z,P3Y,Shared,All subscriptions,All resource groups,VirtualMachines,Standard_D4ads_v5,westeurope,6,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/22075636-40ec-4c62-8063-17bb60b932d7/reservations/e4c24b06-4d73-433e-bad3-7cb6ad15ae63/overview',
+    'VM_RI_05-08-2025_14-00,9e37dddb-ffb5-4dc8-9bbb-51f27a879565,0efcd748-5856-485f-b2a9-226e00c39f28,Succeeded,2028-05-08T12:01:59Z,2025-05-08T12:00:56Z,P3Y,Shared,All subscriptions,All resource groups,VirtualMachines,Standard_D8ads_v5,westeurope,6,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/0efcd748-5856-485f-b2a9-226e00c39f28/reservations/9e37dddb-ffb5-4dc8-9bbb-51f27a879565/overview',
+    'VM_RI_05-08-2025_15-07,d89c1f56-c45a-43eb-acf4-def0156ebb81,9faa6968-8ace-4c3b-9faa-204a5a897528,Succeeded,2028-05-08T13:10:02Z,2025-05-08T13:08:48Z,P3Y,Shared,All subscriptions,All resource groups,VirtualMachines,Standard_D8ads_v5,westeurope,8,96,99,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/9faa6968-8ace-4c3b-9faa-204a5a897528/reservations/d89c1f56-c45a-43eb-acf4-def0156ebb81/overview',
+    'VM_RI_02-24-2026_10-40,68eeb5a8-c95b-41d0-a83b-59b5583311a0,c26ef860-5354-48e1-a8ae-5abb6d1cbe17,Succeeded,2029-02-24T09:42:12Z,2026-02-24T09:41:00Z,P3Y,Shared,All subscriptions,All resource groups,VirtualMachines,Standard_D2s_v5,westeurope,1,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/c26ef860-5354-48e1-a8ae-5abb6d1cbe17/reservations/68eeb5a8-c95b-41d0-a83b-59b5583311a0/overview',
+    'VM_RI_05-26-2023_15-01,5356a490-df71-4394-a92c-919ad987b0ec,2c70b10d-9eb8-485f-a48e-5dacfcde4dfc,Succeeded,2026-05-26T13:03:35Z,2023-05-26T13:02:32Z,P3Y,Shared,All subscriptions,All resource groups,VirtualMachines,Standard_DS11_v2,westeurope,1,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/2c70b10d-9eb8-485f-a48e-5dacfcde4dfc/reservations/5356a490-df71-4394-a92c-919ad987b0ec/overview',
+    'Cosmos_RI_10-26-2023_13-35,a8f7241d-d98e-4323-b0c5-243330ace2e1,e85b25cf-f65d-457f-99ee-68d7ec613c16,Succeeded,2026-10-26T11:38:14Z,2023-10-26T11:36:12Z,P3Y,Shared,All subscriptions,All resource groups,CosmosDb,Cosmos_DB_5000_RUs,global,1,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/e85b25cf-f65d-457f-99ee-68d7ec613c16/reservations/a8f7241d-d98e-4323-b0c5-243330ace2e1/overview',
+    'Cosmos_RI_05-26-2023_15-05,bb3205d7-8edd-4c1b-ace1-8a126aebc704,6e54a143-b29b-4b33-af2f-7ccd307f0b42,Succeeded,2026-05-26T13:09:16Z,2023-05-26T13:06:51Z,P3Y,Shared,All subscriptions,All resource groups,CosmosDb,Cosmos_DB_5000_RUs,global,1,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/6e54a143-b29b-4b33-af2f-7ccd307f0b42/reservations/bb3205d7-8edd-4c1b-ace1-8a126aebc704/overview',
+    'Databricks_Plan_11-05-2025_12-02,0b832f39-2c08-4b24-9dcc-3889ce3017f5,cffbc8f1-b3af-4cda-bebe-34cdf1125f67,Succeeded,2026-11-05T11:09:15Z,2025-11-05T11:07:49Z,P1Y,Shared,All subscriptions,All resource groups,Databricks,azure_databricks_1million_dbu_hours,global,1,100,100,100,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/cffbc8f1-b3af-4cda-bebe-34cdf1125f67/reservations/0b832f39-2c08-4b24-9dcc-3889ce3017f5/overview',
+    'Databricks_Plan_03-04-2026_09-38,94dc644e-f27f-40a8-8eca-c07a0ebd3ea8,c779d56b-acf6-4e24-835c-841d2219fb1e,Succeeded,2027-04-03T07:47:14Z,2026-04-03T07:46:00Z,P1Y,Shared,All subscriptions,All resource groups,Databricks,azure_databricks_1million_dbu_hours,global,1,11,11,11,https://portal.azure.com#resource/providers/microsoft.capacity/reservationOrders/c779d56b-acf6-4e24-835c-841d2219fb1e/reservations/94dc644e-f27f-40a8-8eca-c07a0ebd3ea8/overview',
+  ].join('\n');
+
+  const raw = parseCSV(csvText);
+  ALL_ROWS = raw.map(normaliseRow).filter(r => r.name || r.reservation_id);
+  FILTER_OPTIONS = extractFilterOptions(ALL_ROWS);
+  ACTIVE_FILTERS = { type: new Set(), term: new Set(), region: new Set(), status: new Set() };
+  AGGREGATED = aggregate(ALL_ROWS);
+  showDashboard('reservedInstances_DEMO.csv');
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// THEME TOGGLE
+// ══════════════════════════════════════════════════════════════════════════
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('dco-theme', next);
+}
+document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+document.getElementById('themeToggleUpload').addEventListener('click', toggleTheme);
+
+// ══════════════════════════════════════════════════════════════
+// STORAGE-BASED FILE LOADING
+// ══════════════════════════════════════════════════════════════
+function ensureStorageSpinner(){
+  let spinner=document.getElementById('storageSpinner');
+  if(spinner)return spinner;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  spinner=document.createElement('div');
+  spinner.id='storageSpinner';
+  spinner.innerHTML='<div class="spinner-ring"></div><div class="spinner-label">Loading data from Azure Storage...<div class="spinner-step" id="spinnerStep">Connecting...</div></div>';
+  uploadScreen.insertBefore(spinner, uploadScreen.firstElementChild ? uploadScreen.firstElementChild.nextSibling : null);
+  return spinner;
+}
+
+function setStorageSpinner(stepText){
+  const spinner=ensureStorageSpinner();
+  const stepEl=document.getElementById('spinnerStep');
+  if(stepEl&&stepText)stepEl.textContent=stepText;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      if(el.dataset.prevDisplay===undefined)el.dataset.prevDisplay=el.style.display||'';
+      el.style.display='none';
+    });
+  }
+
+  spinner.style.display='flex';
+}
+
+function hideStorageSpinner(){
+  const spinner=document.getElementById('storageSpinner');
+  if(spinner)spinner.style.display='none';
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      const prev=(el.dataset.prevDisplay!==undefined)?el.dataset.prevDisplay:'';
+      el.style.display=prev;
+      delete el.dataset.prevDisplay;
+    });
+  }
+}
+window.onFilesLoaded = function(loadedFiles) {
+  const organized = organizeLoadedFiles(loadedFiles);
+  
+  if (organized.summaryContent) {
+    const summaryFile = new File([organized.summaryContent], 'summary.csv', { type: 'text/csv' });
+    handleFile(summaryFile);
+  }
+  
+  hideFileUploadUI();
+};
+
+async function autoLoadFromStorage() {
+  const dashboardId = 'reservedInstances';
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+
+  if (hasConnection) {
+    setStorageSpinner('Connecting...');
+  }
+
+  const loaded = await initStorageFileLoader(dashboardId, (step) => {
+    setStorageSpinner(step || 'Loading...');
+  });
+
+  if (!loaded) {
+    hideStorageSpinner();
+    showFileUploadUI();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+</script>
+<script src="../bin/table-sort.js"></script>
+</body>
+</html>
+
+

@@ -1,0 +1,1386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Azure Event Hub Dashboard</title>
+<link rel="icon" type="image/png" href="../bin/delaware-dee-rgb.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../bin/dashboard-core.css">
+<link rel="stylesheet" href="../bin/dashboard-eventhubs.css">
+<script src="../bin/storage-loader.js"></script>
+<script src="../bin/filter-bar-helper.js"></script>
+<script>
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+
+</head>
+<body class="ambient-glow">
+<div id="recTooltip" class="rec-tip" role="tooltip" aria-hidden="true"></div>
+
+<!-- ══════════════════════════════════════════════ UPLOAD ══ -->
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode">
+    <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
+  </button>
+  <h1>Event Hub Dashboard</h1>
+  <p>Upload one or both files exported by <code>get_eventhubnamespaces.py</code>.
+     Files are parsed entirely in your browser — nothing is uploaded to any server.</p>
+
+  <div id="upload-zone" class="drop-zone" style="max-width:480px;margin:0 auto">
+    <div class="icon">📨</div>
+    <div class="label">Drop your CSV file(s) here</div>
+    <div class="hint">summary · timeseries · or both at once</div>
+  </div>
+  <input type="file" id="file-input" accept=".csv" multiple style="display:none"
+         title="Expected files: *_eventhub_summary_*.csv and/or *_eventhub_timeseries_*.csv">
+
+  <div id="upload-status" style="min-height:24px;margin:8px 0 2px;font-size:12px;color:var(--text-dim);text-align:center"></div>
+
+  <div style="margin-top:4px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+    <button class="btn btn--ghost" onclick="loadDemo()">Load Demo Data</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════ DASHBOARD ══ -->
+<div id="dashboardScreen">
+  <div class="topbar">
+    <h1><img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle"><span id="dashTitle">Event Hub Dashboard</span></h1>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode">
+        <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
+      </button>
+      <button class="topbar-btn" id="reloadBtn">↩ Load another CSV</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+
+  <!-- FILTER BAR -->
+  <div class="filter-bar" id="filterBar"></div>
+
+  <!-- KPIs -->
+  <div class="kpi-row" id="kpis"></div>
+
+  <!-- SECTIONS -->
+  <div class="dashboard">
+    <div class="env-section" id="costAdvisorySection">
+      <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+        <div class="env-icon">▼</div>
+        <h2>Cost Advisory</h2>
+        <span class="env-summary" id="costAdvisorySummary"></span>
+      </div>
+      <div class="env-body">
+
+        <h3 style="font-size:13px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px;margin:0 0 12px">Hosting Cost Recommendations</h3>
+        <div class="table-wrap" style="margin-bottom:28px"><table class="eh-table" id="recTable"></table></div>
+
+        <div class="charts-area">
+          <div class="row row-full" style="margin-bottom:20px">
+            <div class="card">
+              <h2>Required TU vs Provisioned TU over Time</h2>
+              <div class="chart-wrap"><canvas id="chartMessages"></canvas></div>
+            </div>
+          </div>
+          <div class="row row-2" style="margin-bottom:20px">
+            <div class="card">
+              <h2>Ingress/Egress Throughput (MB/s)</h2>
+              <div class="chart-wrap"><canvas id="chartBytes"></canvas></div>
+            </div>
+            <div class="card">
+              <h2>Throttled Requests over Time</h2>
+              <div class="chart-wrap"><canvas id="chartThrottled"></canvas></div>
+            </div>
+          </div>
+          <div class="row row-full">
+            <div class="card">
+              <h2>Provisioned TU vs Required TU p95 by Namespace</h2>
+              <div class="chart-wrap" style="height:260px"><canvas id="chartNsBar"></canvas></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- NAMESPACE SECTIONS injected here by renderNamespaceSections() -->
+    <div id="nsContainer"></div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+// GLOBALS
+// ══════════════════════════════════════════════════════════════
+const COLORS = ['#4f8cff','#22d3ab','#f59e42','#e0547e','#a78bfa',
+                '#38bdf8','#f472b6','#facc15','#34d399','#fb923c',
+                '#818cf8','#e879f9','#22d3ee','#a3e635','#f87171',
+                '#c084fc','#2dd4bf','#fbbf24','#64748b','#94a3b8'];
+
+let SUMMARY_ROWS  = [];   // rows from *_eventhub_summary_*.csv
+let TS_ROWS       = [];   // rows from *_eventhub_timeseries_*.csv
+let LOADED_FILES  = { summary: null, timeseries: null }; // filenames
+let AGG           = null;
+let FILTER_OPTIONS= {};
+let ACTIVE_FILTERS= {};
+let CHART_INSTANCES = [];
+
+const CHARTS_HTML = `
+  <div class="row row-full" style="margin-bottom:20px">
+    <div class="card">
+      <h2>Required TU vs Provisioned TU over Time</h2>
+      <div class="chart-wrap"><canvas id="chartMessages"></canvas></div>
+    </div>
+  </div>
+  <div class="row row-2" style="margin-bottom:20px">
+    <div class="card">
+      <h2>Ingress/Egress Throughput (MB/s)</h2>
+      <div class="chart-wrap"><canvas id="chartBytes"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>Throttled Requests over Time</h2>
+      <div class="chart-wrap"><canvas id="chartThrottled"></canvas></div>
+    </div>
+  </div>
+  <div class="row row-full">
+    <div class="card">
+      <h2>Provisioned TU vs Required TU p95 by Namespace</h2>
+      <div class="chart-wrap" style="height:260px"><canvas id="chartNsBar"></canvas></div>
+    </div>
+  </div>`;
+
+// ══════════════════════════════════════════════════════════════
+// FORMATTING HELPERS
+// ══════════════════════════════════════════════════════════════
+function fmtNum(v, decimals = 0) {
+  if (v == null || isNaN(v)) return '—';
+  return v.toLocaleString('de-DE', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+function fmtMessages(v) {
+  if (v == null) return '—';
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + ' G';
+  if (v >= 1e6) return (v / 1e6).toFixed(2) + ' M';
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + ' K';
+  return fmtNum(v);
+}
+function fmtBytes(v) {
+  if (v == null) return '—';
+  if (v >= 1e12) return (v / 1e12).toFixed(2) + ' TB';
+  if (v >= 1e9)  return (v / 1e9).toFixed(2)  + ' GB';
+  if (v >= 1e6)  return (v / 1e6).toFixed(2)  + ' MB';
+  if (v >= 1e3)  return (v / 1e3).toFixed(1)  + ' KB';
+  return v.toFixed(0) + ' B';
+}
+function fmtPct(v) {
+  if (v == null || isNaN(v)) return '—';
+  return v.toFixed(1) + '%';
+}
+function pf(v) {
+  if (v === '' || v === undefined || v === null) return null;
+  const n = parseFloat(v);
+  return isNaN(n) ? null : n;
+}
+function tuRequiredFromPoint(inMsg, outMsg, inBytes, outBytes) {
+  const sec = 300;
+  const inMsgs = (inMsg || 0) / sec;
+  const outMsgs = (outMsg || 0) / sec;
+  const inMbps = ((inBytes || 0) / (1024 * 1024)) / sec;
+  const outMbps = ((outBytes || 0) / (1024 * 1024)) / sec;
+  return {
+    ingressMBps: inMbps,
+    egressMBps: outMbps,
+    requiredTU: Math.max(
+      inMsgs / 1000,
+      outMsgs / 4096,
+      inMbps / 1,
+      outMbps / 2,
+    ),
+  };
+}
+function percentile(values, pct) {
+  const clean = (values || []).filter(v => v != null).sort((a, b) => a - b);
+  if (!clean.length) return null;
+  if (clean.length === 1) return clean[0];
+  const rank = (clean.length - 1) * (pct / 100);
+  const lo = Math.floor(rank);
+  const hi = Math.min(lo + 1, clean.length - 1);
+  const w = rank - lo;
+  return clean[lo] * (1 - w) + clean[hi] * w;
+}
+function riskBadgeClass(risk) {
+  const r = (risk || '').toLowerCase();
+  if (r === 'high') return 'rec-badge rec-badge--high';
+  if (r === 'medium') return 'rec-badge rec-badge--medium';
+  return 'rec-badge rec-badge--low';
+}
+function recBadge(risk, reason) {
+  const label = (risk || 'low').toUpperCase();
+  const tip   = reason ? ` data-reason="${esc(reason)}"` : '';
+  return `<span class="${riskBadgeClass(risk)}"${tip}>${label}</span>`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// CSV PARSING
+// ══════════════════════════════════════════════════════════════
+function parseCSV(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(';').map(h => h.trim());
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = lines[i].split(';');
+    const row = {};
+    headers.forEach((h, j) => { row[h] = (vals[j] || '').trim(); });
+    rows.push(row);
+  }
+  return rows;
+}
+
+// ══════════════════════════════════════════════════════════════
+// EXTRACT FILTER OPTIONS
+// ══════════════════════════════════════════════════════════════
+function extractFilterOptions(summaryRows) {
+  const subs = new Set(), nss = new Set(), locs = new Set(), skus = new Set(), risks = new Set(), recs = new Set();
+  for (const r of summaryRows) {
+    if (r.subscription_name) subs.add(r.subscription_name);
+    if (r.namespace_name)    nss.add(r.namespace_name);
+    if (r.location)          locs.add(r.location);
+    if (r.sku_tier)          skus.add(r.sku_tier);
+    if (r.namespace_cost_risk) risks.add(r.namespace_cost_risk);
+    if (r.namespace_recommendation) recs.add(r.namespace_recommendation);
+  }
+  return {
+    subscription: [...subs].sort(),
+    namespace:    [...nss].sort(),
+    location:     [...locs].sort(),
+    sku_tier:     [...skus].sort(),
+    cost_risk:    [...risks].sort(),
+    recommendation: [...recs].sort(),
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// AGGREGATION
+// ══════════════════════════════════════════════════════════════
+function aggregate(summaryRows, tsRows) {
+  const hasSummary = summaryRows && summaryRows.length > 0;
+  const hasTS      = tsRows && tsRows.length > 0;
+
+  // --- Namespace metadata from summary rows (one row per ns×eh)
+  const nsMeta    = new Map();
+  const nsEventHubs = new Map();
+
+  if (hasSummary) {
+    for (const r of summaryRows) {
+      const ns = r.namespace_name;
+      const eh = r.eventhub_name;
+      if (!ns) continue;
+
+      if (!nsMeta.has(ns)) {
+        nsMeta.set(ns, {
+          name:          ns,
+          subscription:  r.subscription_name,
+          resource_group: r.resource_group,
+          location:      r.location,
+          sku_tier:      r.sku_tier,
+          sku_capacity:  pf(r.sku_capacity),
+          auto_inflate:  r.is_auto_inflate_enabled === 'True',
+          max_tu:        pf(r.max_throughput_units),
+          rec_risk:      (r.namespace_cost_risk || '').toLowerCase(),
+          recommendation: r.namespace_recommendation || '',
+          recommendation_reason: r.namespace_recommendation_reason || '',
+          required_tu_avg: pf(r.namespace_required_tu_avg),
+          required_tu_p95: pf(r.namespace_required_tu_p95),
+          required_tu_peak: pf(r.namespace_required_tu_peak),
+          recommended_tu_p95: pf(r.namespace_recommended_tu_p95),
+          possible_tu_savings: pf(r.namespace_possible_tu_savings),
+          tu_utilization_p95_pct: pf(r.namespace_tu_utilization_p95_pct),
+          throttled_points: pf(r.namespace_throttled_points),
+        });
+      }
+      if (eh) {
+        if (!nsEventHubs.has(ns)) nsEventHubs.set(ns, new Map());
+        const ehMap = nsEventHubs.get(ns);
+        if (!ehMap.has(eh)) {
+          ehMap.set(eh, {
+            name:       eh,
+            partitions: pf(r.partition_count),
+            retention:  pf(r.message_retention_days),
+            status:     r.eventhub_status || '',
+          });
+        }
+      }
+    }
+  }
+
+  // --- Timeseries data from TS rows (one row per ns×timestamp)
+  const nsTimeSeries = new Map(); // nsName -> Map<timestamp, point>
+
+  if (hasTS) {
+    for (const r of tsRows) {
+      const ns = r.namespace_name;
+      const ts = r.timestamp;
+      if (!ns || !ts) continue;
+      if (!nsTimeSeries.has(ns)) nsTimeSeries.set(ns, new Map());
+      const tsMap = nsTimeSeries.get(ns);
+      if (!tsMap.has(ts)) {
+        const req = pf(r.estimated_required_tu);
+        const inMsg = pf(r.incoming_messages) || 0;
+        const outMsg = pf(r.outgoing_messages) || 0;
+        const inBytes = pf(r.incoming_bytes) || 0;
+        const outBytes = pf(r.outgoing_bytes) || 0;
+        const fallback = tuRequiredFromPoint(inMsg, outMsg, inBytes, outBytes);
+        tsMap.set(ts, {
+          in_msg:    inMsg,
+          out_msg:   outMsg,
+          in_bytes:  inBytes,
+          out_bytes: outBytes,
+          throttled: pf(r.throttled_requests) || 0,
+          req_tu: req != null ? req : fallback.requiredTU,
+          in_mbps: pf(r.ingress_mb_per_sec) != null ? pf(r.ingress_mb_per_sec) : fallback.ingressMBps,
+          out_mbps: pf(r.egress_mb_per_sec) != null ? pf(r.egress_mb_per_sec) : fallback.egressMBps,
+        });
+      }
+    }
+  }
+
+  // --- If only timeseries loaded (no summary), build minimal nsMeta from TS
+  if (!hasSummary && hasTS) {
+    for (const ns of nsTimeSeries.keys()) {
+      if (!nsMeta.has(ns)) {
+        nsMeta.set(ns, { name: ns, subscription: '', resource_group: '', location: '',
+          sku_tier: '', sku_capacity: null, auto_inflate: false, max_tu: null,
+          rec_risk: '', recommendation: '', recommendation_reason: '',
+          required_tu_avg: null, required_tu_p95: null, required_tu_peak: null,
+          recommended_tu_p95: null, possible_tu_savings: null, tu_utilization_p95_pct: null,
+          throttled_points: null });
+      }
+    }
+  }
+
+  // --- Collect all unique timestamps across all namespaces (sorted)
+  const allTimestamps = [...new Set(
+    [...nsTimeSeries.values()].flatMap(m => [...m.keys()])
+  )].sort();
+
+  // --- Build per-namespace totals & aggregate time series
+  const namespaces = [];
+  let globalInMsg = 0, globalOutMsg = 0, globalInBytes = 0, globalOutBytes = 0, globalThrottled = 0;
+  let globalReqTu = 0;
+  let globalProvisionedTu = 0;
+  let globalRecommendedTu = 0;
+  let globalPotentialSavings = 0;
+  let riskHigh = 0;
+  let riskMedium = 0;
+
+  const aggSeries = allTimestamps.map(ts => ({
+    ts, in_msg: 0, out_msg: 0, in_bytes: 0, out_bytes: 0, throttled: 0, req_tu: 0, in_mbps: 0, out_mbps: 0
+  }));
+  const tsToIdx = {};
+  allTimestamps.forEach((ts, i) => { tsToIdx[ts] = i; });
+
+  for (const [ns, meta] of nsMeta) {
+    const tsMap = nsTimeSeries.get(ns) || new Map();
+    let nsIn = 0, nsOut = 0, nsInB = 0, nsOutB = 0, nsTh = 0;
+    const reqSeries = [];
+    for (const [ts, v] of tsMap) {
+      nsIn    += v.in_msg;
+      nsOut   += v.out_msg;
+      nsInB   += v.in_bytes;
+      nsOutB  += v.out_bytes;
+      nsTh    += v.throttled;
+      reqSeries.push(v.req_tu || 0);
+      const idx = tsToIdx[ts];
+      if (idx !== undefined) {
+        aggSeries[idx].in_msg    += v.in_msg;
+        aggSeries[idx].out_msg   += v.out_msg;
+        aggSeries[idx].in_bytes  += v.in_bytes;
+        aggSeries[idx].out_bytes += v.out_bytes;
+        aggSeries[idx].throttled += v.throttled;
+        aggSeries[idx].req_tu    += (v.req_tu || 0);
+        aggSeries[idx].in_mbps   += (v.in_mbps || 0);
+        aggSeries[idx].out_mbps  += (v.out_mbps || 0);
+      }
+    }
+    globalInMsg    += nsIn;
+    globalOutMsg   += nsOut;
+    globalInBytes  += nsInB;
+    globalOutBytes += nsOutB;
+    globalThrottled += nsTh;
+
+    const reqAvg  = meta.required_tu_avg  != null ? meta.required_tu_avg  : (reqSeries.length ? reqSeries.reduce((s, v) => s + v, 0) / reqSeries.length : null);
+    const reqP95  = meta.required_tu_p95  != null ? meta.required_tu_p95  : percentile(reqSeries, 95);
+    const reqPeak = meta.required_tu_peak != null ? meta.required_tu_peak : (reqSeries.length ? Math.max(...reqSeries) : null);
+    const recTuP95 = meta.recommended_tu_p95 != null ? meta.recommended_tu_p95 : (reqP95 != null ? Math.max(1, Math.ceil(reqP95)) : null);
+    const cap = meta.sku_capacity || 0;
+    const savings = meta.possible_tu_savings != null
+      ? meta.possible_tu_savings
+      : (cap && recTuP95 != null ? Math.max(0, cap - recTuP95) : 0);
+    const utilP95 = meta.tu_utilization_p95_pct != null
+      ? meta.tu_utilization_p95_pct
+      : (cap && reqP95 != null ? (reqP95 / cap) * 100 : null);
+
+    globalReqTu          += (reqP95 || 0);
+    globalProvisionedTu  += (cap || 0);
+    globalRecommendedTu  += (recTuP95 || 0);
+    globalPotentialSavings += (savings || 0);
+    if ((meta.rec_risk || '').toLowerCase() === 'high')   riskHigh   += 1;
+    if ((meta.rec_risk || '').toLowerCase() === 'medium') riskMedium += 1;
+
+    const ehs = [...(nsEventHubs.get(ns) || new Map()).values()];
+    const nsSeries = allTimestamps.map(ts => tsMap.get(ts) || null);
+
+    namespaces.push({
+      ...meta,
+      required_tu_avg: reqAvg,
+      required_tu_p95: reqP95,
+      required_tu_peak: reqPeak,
+      recommended_tu_p95: recTuP95,
+      possible_tu_savings: savings,
+      tu_utilization_p95_pct: utilP95,
+      total_in_msg:    nsIn,
+      total_out_msg:   nsOut,
+      total_in_bytes:  nsInB,
+      total_out_bytes: nsOutB,
+      total_throttled: nsTh,
+      event_hubs:      ehs,
+      time_series:     nsSeries,
+    });
+  }
+
+  namespaces.sort((a, b) => b.total_in_msg - a.total_in_msg || (b.required_tu_p95 || 0) - (a.required_tu_p95 || 0));
+
+  return {
+    namespaces,
+    timestamps: allTimestamps,
+    agg_series: aggSeries,
+    has_summary: hasSummary,
+    has_timeseries: hasTS,
+    totals: {
+      in_msg: globalInMsg, out_msg: globalOutMsg,
+      in_bytes: globalInBytes, out_bytes: globalOutBytes,
+      throttled: globalThrottled,
+      required_tu_p95_sum:     globalReqTu,
+      provisioned_tu_sum:      globalProvisionedTu,
+      recommended_tu_p95_sum:  globalRecommendedTu,
+      possible_tu_savings_sum: globalPotentialSavings,
+      high_risk_namespaces:    riskHigh,
+      medium_risk_namespaces:  riskMedium,
+    },
+    ns_count: namespaces.length,
+    eh_count: namespaces.reduce((s, ns) => s + ns.event_hubs.length, 0),
+    time_from: allTimestamps[0] || '',
+    time_to:   allTimestamps[allTimestamps.length - 1] || '',
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// FILTER
+// ══════════════════════════════════════════════════════════════
+function getFilteredSummaryRows() {
+  return SUMMARY_ROWS.filter(r => {
+    if (ACTIVE_FILTERS.subscription.size && !ACTIVE_FILTERS.subscription.has(r.subscription_name)) return false;
+    if (ACTIVE_FILTERS.namespace.size    && !ACTIVE_FILTERS.namespace.has(r.namespace_name))    return false;
+    if (ACTIVE_FILTERS.location.size     && !ACTIVE_FILTERS.location.has(r.location))           return false;
+    if (ACTIVE_FILTERS.sku_tier.size     && !ACTIVE_FILTERS.sku_tier.has(r.sku_tier))           return false;
+    if (ACTIVE_FILTERS.cost_risk.size    && !ACTIVE_FILTERS.cost_risk.has(r.namespace_cost_risk || '')) return false;
+    if (ACTIVE_FILTERS.recommendation.size && !ACTIVE_FILTERS.recommendation.has(r.namespace_recommendation || '')) return false;
+    return true;
+  });
+}
+function getFilteredTsRows() {
+  if (!ACTIVE_FILTERS.namespace.size) return TS_ROWS;
+  return TS_ROWS.filter(r => !ACTIVE_FILTERS.namespace.size || ACTIVE_FILTERS.namespace.has(r.namespace_name));
+}
+
+function applyFilters() {
+  AGG = aggregate(getFilteredSummaryRows(), getFilteredTsRows());
+  destroyCharts();
+  renderKPIs();
+  renderRecommendations();
+  renderCharts();
+  renderNsSections();
+}
+
+// ══════════════════════════════════════════════════════════════
+// FILTER BAR
+// ══════════════════════════════════════════════════════════════
+const FILTER_DEFS = [
+  { key: 'subscription', label: 'Subscription', icon: '📋' },
+  { key: 'namespace',    label: 'Namespace',    icon: '📨' },
+  { key: 'location',     label: 'Location',     icon: '📍' },
+  { key: 'sku_tier',     label: 'SKU',          icon: '⭐' },
+  { key: 'cost_risk',    label: 'Cost Risk',    icon: '⚠️' },
+  { key: 'recommendation', label: 'Recommendation', icon: '💡' },
+];
+
+// buildFilterBar moved to bin/filter-bar-helper.js
+
+// onFilterCheck moved to bin/filter-bar-helper.js
+
+// ══════════════════════════════════════════════════════════════
+// UTILITY
+// ══════════════════════════════════════════════════════════════
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+function getCSSVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function destroyCharts() { CHART_INSTANCES.forEach(c => c.destroy()); CHART_INSTANCES = []; }
+function makeChart(id, cfg) {
+  const ctx = document.getElementById(id);
+  if (!ctx) return null;
+  const c = new Chart(ctx.getContext('2d'), cfg);
+  CHART_INSTANCES.push(c);
+  return c;
+}
+function tooltipStyle() {
+  return {
+    backgroundColor: getCSSVar('--surface-2'),
+    borderColor:     getCSSVar('--border'),
+    borderWidth: 1,
+    titleColor:  getCSSVar('--text'),
+    bodyColor:   getCSSVar('--text-dim'),
+    titleFont:   { family: "'DM Sans',sans-serif", weight: 600 },
+    bodyFont:    { family: "'JetBrains Mono',monospace", size: 11 },
+    cornerRadius: 8,
+    padding: 12,
+  };
+}
+
+// Thinned timestamps for chart labels (max N labels)
+function thinLabels(timestamps, maxLabels = 16) {
+  if (timestamps.length <= maxLabels) return timestamps;
+  const step = Math.ceil(timestamps.length / maxLabels);
+  return timestamps.map((ts, i) => i % step === 0 ? ts.replace('T', ' ').replace('Z', '') : '');
+}
+function formatTs(ts) { return ts ? ts.replace('T', ' ').replace(':00Z', '').replace('Z', '') : ''; }
+function formatDateOnly(ts) { return ts ? ts.slice(0, 10) : ''; }
+
+// ══════════════════════════════════════════════════════════════
+// KPIs
+// ══════════════════════════════════════════════════════════════
+function renderKPIs() {
+  const el = document.getElementById('kpis');
+  if (!AGG) { el.innerHTML = ''; return; }
+  const t = AGG.totals;
+  const throttleClass = t.throttled > 0 ? 'u-high' : 'u-low';
+  const period = AGG.time_from && AGG.time_to
+    ? `${formatDateOnly(AGG.time_from)} → ${formatDateOnly(AGG.time_to)}`
+    : '';
+
+  el.innerHTML = `
+    <div class="kpi"><div class="label">Namespaces</div><div class="value">${AGG.ns_count}</div></div>
+    <div class="kpi"><div class="label">Event Hubs</div><div class="value">${AGG.eh_count}</div></div>
+    <div class="kpi">
+      <div class="label">Provisioned TU (sum)</div>
+      <div class="value">${fmtNum(t.provisioned_tu_sum || 0)}</div>
+      <div class="sub-value">${fmtNum(t.recommended_tu_p95_sum || 0)} suggested p95</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Required TU p95 (sum)</div>
+      <div class="value">${(t.required_tu_p95_sum || 0).toFixed(1)}</div>
+      <div class="sub-value">${fmtNum(t.possible_tu_savings_sum || 0)} TU potential savings</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Cost Risk</div>
+      <div class="value">${fmtNum(t.high_risk_namespaces || 0)} high</div>
+      <div class="sub-value">${fmtNum(t.medium_risk_namespaces || 0)} medium</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Throttled Requests</div>
+      <div class="value ${throttleClass}" style="font-size:24px">${fmtNum(t.throttled)}</div>
+      <div class="sub-value">${period}</div>
+    </div>`;
+}
+
+function renderRecommendations() {
+  const tbl = document.getElementById('recTable');
+  if (!tbl || !AGG) return;
+  const rows = [...AGG.namespaces]
+    .sort((a, b) => {
+      const rank = r => (r === 'high' ? 3 : r === 'medium' ? 2 : 1);
+      return rank((b.rec_risk || '').toLowerCase()) - rank((a.rec_risk || '').toLowerCase());
+    })
+    .slice(0, 12);
+
+  // Update Cost Advisory section header summary
+  const summary = document.getElementById('costAdvisorySummary');
+  if (summary && AGG.totals) {
+    const t = AGG.totals;
+    const parts = [];
+    if (t.high_risk_namespaces) parts.push(`${t.high_risk_namespaces} high risk`);
+    if (t.medium_risk_namespaces) parts.push(`${t.medium_risk_namespaces} medium risk`);
+    if (t.possible_tu_savings_sum) parts.push(`${fmtNum(t.possible_tu_savings_sum)} TU savings`);
+    summary.textContent = parts.join(' · ') || 'No cost issues detected';
+  }
+
+  tbl.innerHTML = `
+    <tr>
+      <th>Namespace</th>
+      <th>Risk</th>
+      <th>Recommendation</th>
+      <th class="num">Provisioned TU</th>
+      <th class="num">Required TU p95</th>
+      <th class="num">Suggested TU</th>
+      <th class="num">Potential Savings</th>
+    </tr>
+    ${rows.map(ns => `
+      <tr>
+        <td>${esc(ns.name || '—')}</td>
+        <td>${recBadge(ns.rec_risk, ns.recommendation_reason)}</td>
+        <td>${esc(ns.recommendation || 'Observe and keep current setting')}</td>
+        <td class="num">${fmtNum(ns.sku_capacity || 0)}</td>
+        <td class="num">${ns.required_tu_p95 != null ? ns.required_tu_p95.toFixed(2) : '—'}</td>
+        <td class="num">${ns.recommended_tu_p95 != null ? fmtNum(ns.recommended_tu_p95) : '—'}</td>
+        <td class="num">${fmtNum(ns.possible_tu_savings || 0)}</td>
+      </tr>
+    `).join('')}
+  `;
+}
+
+// ══════════════════════════════════════════════════════════════
+// CHARTS
+// ══════════════════════════════════════════════════════════════
+function renderCharts() {
+  const chartWrap = document.querySelector('#costAdvisorySection .charts-area');
+  if (!AGG) return;
+
+  if (!AGG.has_timeseries) {
+    if (chartWrap) chartWrap.innerHTML = `
+      <div style="padding:24px;text-align:center;color:var(--text-muted);font-size:13px">
+        📈 Load the <strong>timeseries file</strong> to see TU trend charts.
+      </div>`;
+    return;
+  }
+  // Restore chart canvases (may have been replaced by the "no timeseries" notice)
+  if (chartWrap && !document.getElementById('chartMessages')) {
+    chartWrap.innerHTML = CHARTS_HTML;
+  }
+  if (!document.getElementById('chartMessages')) return;
+  const ts    = AGG.timestamps;
+  const series = AGG.agg_series;
+  const labels = ts.map(formatTs);
+  const tt = tooltipStyle();
+
+  // Common scale opts
+  const xScale = {
+    ticks: {
+      maxTicksLimit: 14,
+      font: { family: "'JetBrains Mono'", size: 9 },
+      maxRotation: 30,
+      callback: function(val, i) {
+        const lbl = labels[i] || '';
+        // show every Nth label to avoid crowding
+        return lbl.includes(':0') || lbl.includes(':3') ? lbl : '';
+      },
+    },
+    grid: { display: false },
+  };
+
+  // ── Required TU vs provisioned TU chart
+  makeChart('chartMessages', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Required TU',
+          data: series.map(p => p.req_tu || 0),
+          borderColor: '#4f8cff',
+          backgroundColor: 'rgba(79,140,255,0.07)',
+          fill: true, tension: 0.3,
+          pointRadius: 0, pointHoverRadius: 4, borderWidth: 2,
+        },
+        {
+          label: 'Provisioned TU',
+          data: series.map(() => AGG.namespaces.reduce((s, n) => s + (n.sku_capacity || 0), 0)),
+          borderColor: '#22d3ab',
+          backgroundColor: 'rgba(34,211,171,0)',
+          fill: false, tension: 0,
+          pointRadius: 0, pointHoverRadius: 4, borderWidth: 2,
+          borderDash: [5, 4],
+        },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        tooltip: { ...tt, callbacks: { label: c => ` ${c.dataset.label}: ${Number(c.parsed.y || 0).toFixed(2)} TU` } },
+        legend: { position: 'top', align: 'end' },
+      },
+      scales: {
+        x: xScale,
+        y: { ticks: { callback: v => Number(v).toFixed(1), font: { family: "'JetBrains Mono'", size: 10 } } },
+      },
+    },
+  });
+
+  // ── Throughput chart (MB/s)
+  makeChart('chartBytes', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Ingress MB/s',
+          data: series.map(p => p.in_mbps || 0),
+          borderColor: '#f59e42',
+          backgroundColor: 'rgba(245,158,66,0.07)',
+          fill: true, tension: 0.3,
+          pointRadius: 0, pointHoverRadius: 4, borderWidth: 2,
+        },
+        {
+          label: 'Egress MB/s',
+          data: series.map(p => p.out_mbps || 0),
+          borderColor: '#e0547e',
+          backgroundColor: 'rgba(224,84,126,0.07)',
+          fill: true, tension: 0.3,
+          pointRadius: 0, pointHoverRadius: 4, borderWidth: 2,
+        },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        tooltip: { ...tt, callbacks: { label: c => ` ${c.dataset.label}: ${Number(c.parsed.y || 0).toFixed(3)} MB/s` } },
+        legend: { position: 'top', align: 'end' },
+      },
+      scales: {
+        x: xScale,
+        y: { ticks: { callback: v => Number(v).toFixed(2), font: { family: "'JetBrains Mono'", size: 10 } } },
+      },
+    },
+  });
+
+  // ── Throttled requests chart
+  const hasThrottle = series.some(p => p.throttled > 0);
+  makeChart('chartThrottled', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Throttled Requests',
+        data: series.map(p => p.throttled),
+        borderColor: hasThrottle ? '#ef5350' : '#22d3ab',
+        backgroundColor: hasThrottle ? 'rgba(239,83,80,0.1)' : 'rgba(34,211,171,0.07)',
+        fill: true, tension: 0.2,
+        pointRadius: 0, pointHoverRadius: 4, borderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        tooltip: { ...tt, callbacks: { label: c => ` Throttled: ${fmtNum(c.parsed.y)}` } },
+        legend: { display: false },
+      },
+      scales: {
+        x: xScale,
+        y: { min: 0, ticks: { callback: v => fmtNum(v), font: { family: "'JetBrains Mono'", size: 10 } } },
+      },
+    },
+  });
+
+  // ── Per-namespace TU chart (top 15)
+  const topNs = AGG.namespaces.slice(0, 15);
+  makeChart('chartNsBar', {
+    type: 'bar',
+    data: {
+      labels: topNs.map(ns => ns.name),
+      datasets: [
+        {
+          label: 'Provisioned TU',
+          data: topNs.map(ns => ns.sku_capacity || 0),
+          backgroundColor: COLORS.map(c => c + 'bb'),
+          borderColor: COLORS,
+          borderWidth: 1,
+          borderRadius: 4,
+        },
+        {
+          label: 'Required TU p95',
+          data: topNs.map(ns => ns.required_tu_p95 || 0),
+          backgroundColor: COLORS.map(c => c + '55'),
+          borderColor: COLORS,
+          borderWidth: 1,
+          borderRadius: 4,
+          borderDash: [4, 2],
+        },
+      ],
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        tooltip: { ...tt, callbacks: { label: c => ` ${c.dataset.label}: ${Number(c.parsed.x || 0).toFixed(2)} TU` } },
+        legend: { position: 'top', align: 'end' },
+      },
+      scales: {
+        x: {
+          ticks: { callback: v => Number(v).toFixed(1), font: { family: "'JetBrains Mono'", size: 10 } },
+          stacked: false,
+        },
+        y: { ticks: { font: { size: 11 } }, grid: { display: false } },
+      },
+    },
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+// NAMESPACE SECTIONS
+// ══════════════════════════════════════════════════════════════
+function renderNsSections() {
+  const container = document.getElementById('nsContainer');
+  if (!AGG || !AGG.namespaces.length) { container.innerHTML = ''; return; }
+
+  let html = '';
+  AGG.namespaces.forEach((ns, idx) => {
+    const hasThrottle = ns.total_throttled > 0;
+    const tuPct = ns.sku_capacity && ns.max_tu
+      ? Math.round((ns.sku_capacity / ns.max_tu) * 100)
+      : (ns.sku_capacity ? null : null);
+
+    html += `<div class="env-section" style="animation-delay:${idx * 0.05}s">
+      <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+        <div class="env-icon">▼</div>
+        <h2>${esc(ns.name)}</h2>
+        <span class="env-summary">${ns.event_hubs.length} event hub${ns.event_hubs.length !== 1 ? 's' : ''}</span>
+        ${hasThrottle ? `<span class="throttle-warn">⚠ ${fmtNum(ns.total_throttled)} throttled</span>` : ''}
+        <span class="inflate-pill ${ns.auto_inflate ? 'inflate-on' : 'inflate-off'}" style="margin-left:4px">
+          ${ns.auto_inflate ? '↑ Auto-inflate' : '─ Fixed TU'}
+        </span>
+        <span class="env-loc">${esc(ns.location)} · ${esc(ns.resource_group)} · ${esc(ns.subscription)}</span>
+      </div>
+      <div class="env-body">
+
+        <!-- NS info row -->
+        <div class="ns-info-row">
+          <div class="ns-info-item">
+            <span class="key">SKU Tier</span>
+            <span class="val">${esc(ns.sku_tier || '—')}</span>
+          </div>
+          <div class="ns-info-item">
+            <span class="key">Throughput Units</span>
+            <span class="val">${ns.sku_capacity != null ? ns.sku_capacity : '—'} TU${ns.max_tu != null ? ' / max ' + ns.max_tu : ''}</span>
+            ${ns.sku_capacity != null ? `
+            <div class="tu-bar-wrap" style="max-width:200px">
+              <div class="tu-bar-track"><div class="tu-bar-fill" style="width:${ns.max_tu ? Math.round(ns.sku_capacity / ns.max_tu * 100) : 100}%;background:${ns.auto_inflate ? 'var(--cyan)' : 'var(--accent)'}"></div></div>
+              <span class="tu-bar-label">${ns.max_tu ? Math.round(ns.sku_capacity / ns.max_tu * 100) + '%' : 'fixed'}</span>
+            </div>` : ''}
+          </div>
+          <div class="ns-info-item">
+            <span class="key">Required TU (p95)</span>
+            <span class="val">${ns.required_tu_p95 != null ? ns.required_tu_p95.toFixed(2) + ' TU' : '—'}</span>
+          </div>
+          <div class="ns-info-item">
+            <span class="key">Required TU (peak)</span>
+            <span class="val">${ns.required_tu_peak != null ? ns.required_tu_peak.toFixed(2) + ' TU' : '—'}</span>
+          </div>
+          <div class="ns-info-item">
+            <span class="key">Suggested TU</span>
+            <span class="val">${ns.recommended_tu_p95 != null ? fmtNum(ns.recommended_tu_p95) + ' TU' : '—'}</span>
+          </div>
+          <div class="ns-info-item">
+            <span class="key">Potential Savings</span>
+            <span class="val">${fmtNum(ns.possible_tu_savings || 0)} TU</span>
+          </div>
+          <div class="ns-info-item">
+            <span class="key">Utilization (p95)</span>
+            <span class="val">${fmtPct(ns.tu_utilization_p95_pct)}</span>
+          </div>
+          <div class="ns-info-item">
+            <span class="key">Cost Risk</span>
+            <span class="val">${recBadge(ns.rec_risk, ns.recommendation_reason)}</span>
+          </div>
+          <div class="ns-info-item" style="grid-column:1 / -1;max-width:none">
+            <span class="key">Recommendation</span>
+            <span class="val">${esc(ns.recommendation || 'Observe and keep current setting')}${ns.recommendation_reason ? ' - ' + esc(ns.recommendation_reason) : ''}</span>
+          </div>
+        </div>
+
+        <!-- Event Hub table -->
+        ${ns.event_hubs.length ? `
+        <table class="eh-table">
+          <thead>
+            <tr>
+              <th>Event Hub</th>
+              <th class="num">Partitions</th>
+              <th class="num">Retention (days)</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${ns.event_hubs.map(eh => `
+            <tr>
+              <td class="label">${esc(eh.name)}</td>
+              <td class="num">${eh.partitions != null ? eh.partitions : '—'}</td>
+              <td class="num">${eh.retention != null ? eh.retention : '—'}</td>
+              <td>
+                <span class="eh-status eh-status--${
+                  eh.status.toLowerCase() === 'active'   ? 'active'  :
+                  eh.status.toLowerCase() === 'disabled' ? 'disabled': 'unknown'
+                }">${esc(eh.status || '—')}</span>
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>` : '<div class="no-metrics">No event hubs found in this namespace.</div>'}
+
+      </div>
+    </div>`;
+  });
+
+  container.innerHTML = html;
+}
+
+// ══════════════════════════════════════════════════════════════
+// SHOW DASHBOARD
+// ══════════════════════════════════════════════════════════════
+function showDashboard() {
+  document.getElementById('uploadScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'block';
+
+  // Determine customer from either filename
+  const fname = LOADED_FILES.summary || LOADED_FILES.timeseries || '';
+  const m = fname.match(/^(\w+)_eventhub_/i);
+  const customer = m ? m[1].toUpperCase() : '';
+
+  document.getElementById('dashTitle').textContent =
+    (customer ? customer + ' — ' : '') + 'Event Hub Dashboard';
+
+  // Build loaded-files badge
+  const parts = [];
+  if (LOADED_FILES.summary)    parts.push(`<span style="color:var(--green)">✓ summary</span>`);
+  else                          parts.push(`<span style="color:var(--text-muted)">○ summary</span>`);
+  if (LOADED_FILES.timeseries) parts.push(`<span style="color:var(--green)">✓ timeseries</span>`);
+  else                          parts.push(`<span style="color:var(--text-muted)">○ timeseries</span>`);
+
+  const period = AGG.time_from && AGG.time_to
+    ? `${formatDateOnly(AGG.time_from)} → ${formatDateOnly(AGG.time_to)}`
+    : '';
+
+  document.getElementById('dashMeta').innerHTML =
+    parts.join(' &nbsp;·&nbsp; ') +
+    (period ? `&nbsp;&nbsp;|&nbsp;&nbsp;${period}` : '') +
+    (AGG.totals.possible_tu_savings_sum ? `&nbsp;&nbsp;|&nbsp;&nbsp;Potential TU savings: ${fmtNum(AGG.totals.possible_tu_savings_sum)}` : '');
+
+  // Apply Chart.js defaults
+  Chart.defaults.color       = getCSSVar('--text-dim');
+  Chart.defaults.borderColor = getCSSVar('--border');
+  Chart.defaults.font.family = "'DM Sans',sans-serif";
+  Chart.defaults.font.size   = 11;
+  Chart.defaults.plugins.legend.labels.usePointStyle    = true;
+  Chart.defaults.plugins.legend.labels.pointStyleWidth  = 8;
+  Chart.defaults.plugins.legend.labels.padding          = 16;
+
+  buildFilterBar();
+  renderKPIs();
+  renderRecommendations();
+  renderCharts();
+  renderNsSections();
+}
+
+// ══════════════════════════════════════════════════════════════
+// FILE HANDLING
+// ══════════════════════════════════════════════════════════════
+function isSummaryFile(filename) {
+  return /eventhub_summary/i.test(filename);
+}
+function isTimeseriesFile(filename) {
+  return /eventhub_timeseries/i.test(filename);
+}
+// Heuristic for legacy single-file (eventhub_namespaces_*.csv): treat as summary+ts
+function isLegacyFile(filename) {
+  return /eventhub_namespaces/i.test(filename);
+}
+
+function updateUploadStatus() {
+  const el = document.getElementById('upload-status');
+  const parts = [];
+  if (LOADED_FILES.summary)    parts.push(`✓ summary: ${LOADED_FILES.summary}`);
+  if (LOADED_FILES.timeseries) parts.push(`✓ timeseries: ${LOADED_FILES.timeseries}`);
+  el.textContent = parts.length ? parts.join('  ·  ') : '';
+  // Update drop zone hint to reflect what's loaded
+  const zone = document.getElementById('upload-zone');
+  if (zone) {
+    const hint = zone.querySelector('.hint');
+    if (hint) {
+      if (LOADED_FILES.summary && LOADED_FILES.timeseries) hint.textContent = 'Both files loaded';
+      else if (LOADED_FILES.summary)    hint.textContent = 'Summary loaded — drop timeseries to add charts';
+      else if (LOADED_FILES.timeseries) hint.textContent = 'Timeseries loaded — drop summary for full view';
+      else hint.textContent = 'summary · timeseries · or both at once';
+    }
+    zone.style.borderColor = (LOADED_FILES.summary || LOADED_FILES.timeseries) ? 'var(--green)' : '';
+  }
+}
+
+function resetFilters() {
+  ACTIVE_FILTERS = {
+    subscription: new Set(), namespace: new Set(), location: new Set(),
+    sku_tier: new Set(), cost_risk: new Set(), recommendation: new Set(),
+  };
+}
+
+function tryShowDashboard() {
+  if (!SUMMARY_ROWS.length && !TS_ROWS.length) return;
+  FILTER_OPTIONS = extractFilterOptions(SUMMARY_ROWS);
+  resetFilters();
+  AGG = aggregate(SUMMARY_ROWS, TS_ROWS);
+  showDashboard();
+}
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const rows = parseCSV(e.target.result);
+      if (!rows.length) { alert('No data rows found in CSV: ' + file.name); return; }
+
+      if (isSummaryFile(file.name)) {
+        SUMMARY_ROWS = rows;
+        LOADED_FILES.summary = file.name;
+      } else if (isTimeseriesFile(file.name)) {
+        TS_ROWS = rows;
+        LOADED_FILES.timeseries = file.name;
+      } else if (isLegacyFile(file.name)) {
+        SUMMARY_ROWS = rows;
+        TS_ROWS = rows;
+        LOADED_FILES.summary = file.name;
+        LOADED_FILES.timeseries = file.name;
+      } else {
+        const cols = Object.keys(rows[0] || {});
+        if (cols.includes('namespace_cost_risk')) {
+          SUMMARY_ROWS = rows;
+          LOADED_FILES.summary = file.name;
+        } else if (cols.includes('estimated_required_tu')) {
+          TS_ROWS = rows;
+          LOADED_FILES.timeseries = file.name;
+        } else {
+          alert('Cannot determine file type from columns. Expected summary or timeseries file from get_eventhubnamespaces.py.');
+          return;
+        }
+      }
+
+      updateUploadStatus();
+      tryShowDashboard();
+    } catch (err) {
+      alert('Error parsing CSV: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function handleFiles(fileList) {
+  [...fileList].forEach(handleFile);
+}
+
+const uploadZone = document.getElementById('upload-zone');
+const fileInput  = document.getElementById('file-input');
+
+uploadZone.addEventListener('click', () => fileInput.click());
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault(); uploadZone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', e => {
+  if (!e.target.files.length) return;
+  const files = [...e.target.files].filter(f => {
+    if (!/eventhub/i.test(f.name))
+      return confirm(`"${f.name}" doesn't look like an Event Hub export.\nExpected a filename containing "eventhub".\n\nLoad it anyway?`);
+    return true;
+  });
+  if (files.length) handleFiles(files);
+  fileInput.value = '';
+});
+
+document.getElementById('reloadBtn').addEventListener('click', () => {
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('uploadScreen').style.display = 'flex';
+  destroyCharts();
+  SUMMARY_ROWS = []; TS_ROWS = []; AGG = null; FILTER_OPTIONS = {};
+  LOADED_FILES = { summary: null, timeseries: null };
+  uploadZone.style.borderColor = '';
+  const hint = uploadZone.querySelector('.hint');
+  if (hint) hint.textContent = 'summary · timeseries · or both at once';
+  document.getElementById('upload-status').textContent = '';
+  fileInput.value = '';
+});
+
+// ══════════════════════════════════════════════════════════════
+// DEMO DATA
+// ══════════════════════════════════════════════════════════════
+function loadDemo() {
+  const tenant   = 'demo-tenant-id';
+  const sub      = 'demo-sub-id';
+  const subName  = 'demo-prd-sub';
+  const loc      = 'westeurope';
+  const now      = new Date('2026-03-28T00:00:00Z');
+
+  const namespaces = [
+    { name: 'eh-prd-weu-01', rg: 'rg-messaging-prod', sku: 'Standard', cap: 5,  maxTu: 10, inflate: true,  ehs: ['orders','shipments','inventory','notifications','payments'] },
+    { name: 'eh-prd-weu-02', rg: 'rg-messaging-prod', sku: 'Standard', cap: 3,  maxTu: 5,  inflate: true,  ehs: ['telemetry','alerts','events'] },
+    { name: 'eh-acc-weu-01', rg: 'rg-messaging-acc',  sku: 'Standard', cap: 1,  maxTu: 3,  inflate: false, ehs: ['orders','shipments'] },
+    { name: 'eh-dev-weu-01', rg: 'rg-messaging-dev',  sku: 'Basic',    cap: 1,  maxTu: 1,  inflate: false, ehs: ['test-events'] },
+  ];
+
+  const INTERVALS = 288; // 24 hours of 5-min data
+  const STEP_MS   = 5 * 60 * 1000;
+
+  const summaryRows = [];
+  const tsRows      = [];
+
+  for (const ns of namespaces) {
+    // Compute TU stats over all intervals first
+    const reqTuAll = [];
+    let throttledTotal = 0, throttledPts = 0;
+
+    for (let i = 0; i < INTERVALS; i++) {
+      const t = new Date(now.getTime() - (INTERVALS - i) * STEP_MS);
+      const ts = t.toISOString().replace('.000Z', 'Z');
+      const hour = t.getUTCHours();
+      const peakFactor = (hour >= 8 && hour <= 18) ? 1.0 + (Math.sin((hour - 8) * Math.PI / 10) * 0.5) : 0.2;
+      const noise = 0.85 + Math.random() * 0.3;
+      const baseIn  = ns.cap * 8000 * peakFactor * noise;
+      const baseOut = baseIn * (0.9 + Math.random() * 0.2);
+      const inBytes  = baseIn  * (380 + Math.random() * 40);
+      const outBytes = baseOut * (380 + Math.random() * 40);
+      const throttled = (ns.cap === 1 && peakFactor > 1.2 && Math.random() > 0.9) ? Math.floor(Math.random() * 5) : 0;
+      const tu = tuRequiredFromPoint(baseIn, baseOut, inBytes, outBytes);
+      reqTuAll.push(tu.requiredTU);
+      throttledTotal += throttled;
+      if (throttled > 0) throttledPts++;
+
+      // Timeseries row
+      tsRows.push({
+        namespace_name:           ns.name,
+        timestamp:                ts,
+        ingress_messages_per_sec: String(baseIn / 300),
+        egress_messages_per_sec:  String(baseOut / 300),
+        ingress_mb_per_sec:       String(tu.ingressMBps),
+        egress_mb_per_sec:        String(tu.egressMBps),
+        estimated_required_tu:    String(tu.requiredTU),
+        incoming_messages:        String(Math.round(baseIn)),
+        outgoing_messages:        String(Math.round(baseOut)),
+        incoming_bytes:           String(Math.round(inBytes)),
+        outgoing_bytes:           String(Math.round(outBytes)),
+        throttled_requests:       String(throttled),
+      });
+    }
+
+    const reqAvg  = reqTuAll.reduce((s, v) => s + v, 0) / reqTuAll.length;
+    const reqP95  = percentile(reqTuAll, 95);
+    const reqPeak = Math.max(...reqTuAll);
+    const recTu   = Math.max(1, Math.ceil(reqP95));
+    const savings = Math.max(0, ns.cap - recTu);
+    const risk    = throttledTotal > 0 ? 'high' : (reqP95 < ns.cap * 0.45 ? 'medium' : 'low');
+    const rec     = risk === 'medium' ? 'downsize-tu' : (risk === 'high' ? 'enable-autoinflate-or-increase-tu' : 'right-sized');
+    const recReason = risk === 'high'
+      ? 'Throttling observed in sampled period.'
+      : (risk === 'medium'
+        ? 'P95 required TU is well below provisioned TU. Consider reducing baseline TU capacity.'
+        : 'Provisioned TU aligns reasonably with observed throughput profile.');
+
+    // Summary rows — one per event hub
+    for (const ehName of ns.ehs) {
+      summaryRows.push({
+        tenant_id:              tenant,
+        subscription_id:        sub,
+        subscription_name:      subName,
+        resource_group:         ns.rg,
+        namespace_name:         ns.name,
+        namespace_id:           `/subscriptions/${sub}/resourceGroups/${ns.rg}/providers/Microsoft.EventHub/namespaces/${ns.name}`,
+        location:               loc,
+        sku_tier:               ns.sku,
+        sku_capacity:           String(ns.cap),
+        is_auto_inflate_enabled: String(ns.inflate),
+        max_throughput_units:   String(ns.maxTu),
+        namespace_required_tu_avg:       String(reqAvg),
+        namespace_required_tu_p95:       String(reqP95),
+        namespace_required_tu_peak:      String(reqPeak),
+        namespace_recommended_tu_p95:    String(recTu),
+        namespace_tu_utilization_avg_pct: String((reqAvg / ns.cap) * 100),
+        namespace_tu_utilization_p95_pct: String((reqP95 / ns.cap) * 100),
+        namespace_tu_utilization_peak_pct: String((reqPeak / ns.cap) * 100),
+        namespace_throttled_points: String(throttledPts),
+        namespace_throttled_total:  String(throttledTotal),
+        namespace_needs_more_than_capacity: String(reqPeak > ns.cap),
+        namespace_possible_tu_savings: String(savings),
+        namespace_cost_risk:          risk,
+        namespace_recommendation:     rec,
+        namespace_recommendation_reason: recReason,
+        eventhub_name:          ehName,
+        partition_count:        '4',
+        message_retention_days: '7',
+        eventhub_status:        'Active',
+      });
+    }
+  }
+
+  SUMMARY_ROWS  = summaryRows;
+  TS_ROWS       = tsRows;
+  LOADED_FILES  = { summary: 'DEMO_eventhub_summary.csv', timeseries: 'DEMO_eventhub_timeseries.csv' };
+  FILTER_OPTIONS = extractFilterOptions(summaryRows);
+  resetFilters();
+  AGG = aggregate(summaryRows, tsRows);
+  showDashboard();
+}
+
+// ══════════════════════════════════════════════════════════════
+// THEME TOGGLE
+// ══════════════════════════════════════════════════════════════
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('dco-theme', next);
+  if (AGG) {
+    Chart.defaults.color       = getCSSVar('--text-dim');
+    Chart.defaults.borderColor = getCSSVar('--border');
+    destroyCharts();
+    renderCharts();
+  }
+}
+document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+document.getElementById('themeToggleUpload').addEventListener('click', toggleTheme);
+
+// ══════════════════════════════════════════════════════════════
+// STORAGE-BASED FILE LOADING
+// ══════════════════════════════════════════════════════════════
+function ensureStorageSpinner(){
+  let spinner=document.getElementById('storageSpinner');
+  if(spinner)return spinner;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  spinner=document.createElement('div');
+  spinner.id='storageSpinner';
+  spinner.innerHTML='<div class="spinner-ring"></div><div class="spinner-label">Loading data from Azure Storage...<div class="spinner-step" id="spinnerStep">Connecting...</div></div>';
+  uploadScreen.insertBefore(spinner, uploadScreen.firstElementChild ? uploadScreen.firstElementChild.nextSibling : null);
+  return spinner;
+}
+
+function setStorageSpinner(stepText){
+  const spinner=ensureStorageSpinner();
+  const stepEl=document.getElementById('spinnerStep');
+  if(stepEl&&stepText)stepEl.textContent=stepText;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      if(el.dataset.prevDisplay===undefined)el.dataset.prevDisplay=el.style.display||'';
+      el.style.display='none';
+    });
+  }
+
+  spinner.style.display='flex';
+}
+
+function hideStorageSpinner(){
+  const spinner=document.getElementById('storageSpinner');
+  if(spinner)spinner.style.display='none';
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      const prev=(el.dataset.prevDisplay!==undefined)?el.dataset.prevDisplay:'';
+      el.style.display=prev;
+      delete el.dataset.prevDisplay;
+    });
+  }
+}
+window.onFilesLoaded = function(loadedFiles) {
+  const organized = organizeLoadedFiles(loadedFiles);
+  
+  if (organized.summaryContent) {
+    const summaryFile = new File([organized.summaryContent], 'summary.csv', { type: 'text/csv' });
+    handleFile(summaryFile);
+  }
+  
+  if (organized.timeseriesContent) {
+    const timeseriesFile = new File([organized.timeseriesContent], 'timeseries.csv', { type: 'text/csv' });
+    handleFile(timeseriesFile);
+  }
+  
+  hideFileUploadUI();
+};
+
+async function autoLoadFromStorage() {
+  const dashboardId = 'eventhubs';
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+
+  if (hasConnection) {
+    setStorageSpinner('Connecting...');
+  }
+
+  const loaded = await initStorageFileLoader(dashboardId, (step) => {
+    setStorageSpinner(step || 'Loading...');
+  });
+
+  if (!loaded) {
+    hideStorageSpinner();
+    showFileUploadUI();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+
+// ══════════════════════════════════════════════════════════════
+// RISK TOOLTIP
+// ══════════════════════════════════════════════════════════════
+(function () {
+  const tip = document.getElementById('recTooltip');
+  let activeEl = null;
+
+  document.addEventListener('mouseover', e => {
+    const el = e.target.closest('.rec-badge[data-reason]');
+    if (!el || el === activeEl) return;
+    activeEl = el;
+    const label = el.textContent.trim();
+    tip.innerHTML = `<div class="tip-label">${esc(label)}</div>${esc(el.dataset.reason)}`;
+    tip.setAttribute('aria-hidden', 'false');
+    tip.classList.add('visible');
+    positionTip(e);
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (tip.classList.contains('visible')) positionTip(e);
+  });
+
+  document.addEventListener('mouseout', e => {
+    if (!e.target.closest('.rec-badge[data-reason]')) return;
+    activeEl = null;
+    tip.classList.remove('visible');
+    tip.setAttribute('aria-hidden', 'true');
+  });
+
+  function positionTip(e) {
+    const pad = 14;
+    let x = e.clientX + pad, y = e.clientY + pad;
+    const tw = tip.offsetWidth || 340, th = tip.offsetHeight || 60;
+    if (x + tw > window.innerWidth  - pad) x = e.clientX - tw - pad;
+    if (y + th > window.innerHeight - pad) y = e.clientY - th - pad;
+    tip.style.left = x + 'px';
+    tip.style.top  = y + 'px';
+  }
+}());
+</script>
+<script src="../bin/table-sort.js"></script>
+</body>
+</html>
+
+

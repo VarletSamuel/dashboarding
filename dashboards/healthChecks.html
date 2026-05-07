@@ -1,0 +1,1164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Azure Health Check Dashboard</title>
+<link rel="icon" type="image/png" href="../bin/delaware-dee-rgb.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../bin/dashboard-core.css">
+<link rel="stylesheet" href="../bin/dashboard-healthChecks.css">
+<script src="../bin/storage-loader.js"></script>
+<script src="../bin/filter-bar-helper.js"></script>
+<script>
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+
+</head>
+<body class="ambient-glow">
+
+<!-- ═══════════════════════ UPLOAD ═══════════════════════ -->
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode">
+    <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
+  </button>
+  <h1>Azure Health Check Dashboard</h1>
+  <p>
+    Upload Advisor, Monitor Alerts, and/or Policy CSVs exported by
+    <code>azure_health_check.py</code>.<br>
+    Files are parsed entirely in your browser — nothing is uploaded to any server.
+  </p>
+  <div class="drop-zone" id="dropZoneMain" style="max-width:540px;margin:24px auto 0">
+    <div class="icon">📂</div>
+    <div class="label">Drop one or more Health Check CSV files here</div>
+    <div class="hint">hc_advisor · hc_monitor_alerts · hc_policy_noncompliant — or click to browse</div>
+  </div>
+  <div id="fileStatusList"></div>
+  <input type="file" id="fileInputMain" accept=".csv" multiple
+         title="Expected files: *_hc_advisor_*.csv, *_hc_monitor_alerts_*.csv, *_hc_policy_noncompliant_*.csv">
+  <div id="errorMsg"></div>
+  <div id="loadingMsg">⏳ Parsing…</div>
+  <button id="buildDashBtn" class="btn" style="display:none;margin-top:12px">Build Dashboard →</button>
+  <div style="margin-top:14px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+    <button id="demoBtn" class="btn btn--ghost">Load Demo Data</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════ DASHBOARD ═══════════════════════ -->
+<div id="dashboardScreen" style="display:none">
+  <div class="topbar">
+    <h1>
+      <img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle">
+      <span id="dashTitle">Azure Health Check Dashboard</span>
+    </h1>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode">
+        <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
+      </button>
+      <button class="topbar-btn" id="reloadBtn">↩ Load another file</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+
+  <div class="filter-bar" id="filterBar"></div>
+  <div class="kpi-row"   id="kpis"></div>
+
+  <!-- ── Advisor ── -->
+  <div class="env-section" id="sect-adv">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>💡 Azure Advisor Recommendations</h2>
+      <span class="env-summary" id="advSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="hc-stat-cards" id="advCatCards"></div>
+      <div class="dashboard" style="padding:0;margin-top:12px">
+        <div class="row row-2">
+          <div class="card">
+            <h2>By Category &amp; Impact</h2>
+            <div class="chart-wrap" style="height:280px"><canvas id="chartAdv"></canvas></div>
+          </div>
+          <div class="card" style="flex:2">
+            <h2>Recommendations</h2>
+            <div class="qc-table-wrap"><table class="qc-table" id="advTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Monitor Alerts ── -->
+  <div class="env-section" id="sect-mon">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>🔔 Monitor Alert Rules</h2>
+      <span class="env-summary" id="monSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="hc-stat-cards" id="monStatCards"></div>
+      <div class="dashboard" style="padding:0;margin-top:12px">
+        <div class="row row-2">
+          <div class="card">
+            <h2>By Severity</h2>
+            <div class="chart-wrap" style="height:260px"><canvas id="chartMon"></canvas></div>
+          </div>
+          <div class="card" style="flex:2">
+            <h2>Alert Rules</h2>
+            <div class="qc-table-wrap"><table class="qc-table" id="monTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Policy ── -->
+  <div class="env-section" id="sect-pol">
+    <div class="env-header" onclick="toggleSection(this)">
+      <div class="env-icon">▼</div>
+      <h2>📋 Policy Non-Compliance</h2>
+      <span class="env-summary" id="polSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="hc-stat-cards" id="polActionCards"></div>
+      <div class="dashboard" style="padding:0;margin-top:12px">
+        <div class="row row-2">
+          <div class="card">
+            <h2>Top Violated Policies</h2>
+            <div class="chart-wrap" style="height:300px"><canvas id="chartPol"></canvas></div>
+          </div>
+          <div class="card" style="flex:2">
+            <h2>Violations</h2>
+            <div class="qc-table-wrap"><table class="qc-table" id="polTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════
+// CONSTANTS
+// ════════════════════════════════════════════════════════════
+const CAT_META = {
+  Cost:                  { icon: '💰', color: '#76d077', label: 'Cost' },
+  Security:              { icon: '🔒', color: '#d92329', label: 'Security' },
+  HighAvailability:      { icon: '🔄', color: '#f59e42', label: 'High Availability' },
+  Performance:           { icon: '⚡', color: '#38bdf8', label: 'Performance' },
+  OperationalExcellence: { icon: '⚙️', color: '#a78bfa', label: 'Op. Excellence' },
+};
+
+const SEV_META = {
+  '0': { label: 'Critical',     color: '#d92329' },
+  '1': { label: 'Error',        color: '#f59e42' },
+  '2': { label: 'Warning',      color: '#facc15' },
+  '3': { label: 'Informational',color: '#38bdf8' },
+  '4': { label: 'Verbose',      color: '#8892a4' },
+};
+
+const PRI_META = {
+  '1': { label: 'Critical', color: '#d92329' },
+  '2': { label: 'High',     color: '#f59e42' },
+  '3': { label: 'Medium',   color: '#38bdf8' },
+  '4': { label: 'Low',      color: '#8892a4' },
+};
+
+// ════════════════════════════════════════════════════════════
+// STATE
+// ════════════════════════════════════════════════════════════
+let ADV_ALL = [], MON_ALL = [], POL_ALL = [];
+let ACTIVE_SUBS = new Set();
+let _chartAdv = null, _chartMon = null, _chartPol = null;
+
+// ════════════════════════════════════════════════════════════
+// HELPERS
+// ════════════════════════════════════════════════════════════
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const pct = (n, d) => d ? Math.round(n / d * 100) : 0;
+
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function impactBadge(v) {
+  if (!v) return '';
+  const cls = v === 'High' ? 'badge-impact-high' : v === 'Medium' ? 'badge-impact-medium' : 'badge-impact-low';
+  return `<span class="${cls}">${esc(v)}</span>`;
+}
+
+function enabledBadge(v) {
+  return String(v).toLowerCase() === 'true'
+    ? '<span class="badge-enabled">Enabled</span>'
+    : '<span class="badge-disabled">Disabled</span>';
+}
+
+function actionBadge(v) {
+  if (!v) return '';
+  const lv = v.toLowerCase();
+  const extra = lv.includes('deny') ? ' badge-action-deny' : lv.includes('audit') ? ' badge-action-audit' : '';
+  return `<span class="badge-action${extra}">${esc(v)}</span>`;
+}
+
+function rgFromId(id) {
+  if (!id) return '';
+  const m = id.match(/resourceGroups\/([^/]+)/i);
+  return m ? m[1] : '';
+}
+
+function nameFromId(id) {
+  if (!id) return '';
+  return id.split('/').pop() || id;
+}
+
+function tooltipCfg() {
+  const surf2   = css('--surface-2') || '#1e2130';
+  const borderC = css('--border')    || '#2a2d3a';
+  const textC   = css('--text')      || '#e0e4f0';
+  const textDim = css('--text-dim')  || '#8892a4';
+  return {
+    backgroundColor: surf2, borderColor: borderC, borderWidth: 1,
+    titleColor: textC, bodyColor: textDim, cornerRadius: 8, padding: 10,
+    titleFont: { family: "'DM Sans',sans-serif", weight: 600 },
+    bodyFont:  { family: "'JetBrains Mono',monospace", size: 12 },
+  };
+}
+
+function axisColors() {
+  return {
+    textC:   css('--text')   || '#e0e4f0',
+    borderC: css('--border') || '#2a2d3a',
+  };
+}
+
+// ════════════════════════════════════════════════════════════
+// CSV PARSING
+// ════════════════════════════════════════════════════════════
+function parseCsv(text) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  if (!lines.length) return { header: [], records: [] };
+  if (lines[0].charCodeAt(0) === 0xFEFF) lines[0] = lines[0].slice(1);
+  const header = lines[0].split(';').map(h => h.trim().toLowerCase());
+  const records = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cells = line.split(';');
+    const rec = {};
+    header.forEach((h, j) => { rec[h] = (cells[j] || '').trim(); });
+    records.push(rec);
+  }
+  return { header, records };
+}
+
+function detectType(header) {
+  if (header.includes('impacted_field'))         return 'advisor';
+  if (header.includes('target_resource_type'))   return 'monitor';
+  if (header.includes('policy_assignment_name')) return 'policy';
+  return null;
+}
+
+// ════════════════════════════════════════════════════════════
+// FILE HANDLING
+// ════════════════════════════════════════════════════════════
+const errorMsg   = document.getElementById('errorMsg');
+const loadingMsg = document.getElementById('loadingMsg');
+const buildBtn   = document.getElementById('buildDashBtn');
+
+(function () {
+  const zone = document.getElementById('dropZoneMain');
+  const inp  = document.getElementById('fileInputMain');
+  zone.addEventListener('click', () => inp.click());
+  zone.addEventListener('dragover',  e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+  });
+  inp.addEventListener('change', () => {
+    if (!inp.files.length) return;
+    const files = [...inp.files].filter(f => {
+      if (!/_hc_/i.test(f.name))
+        return confirm(`"${f.name}" doesn't look like a Health Check export.\nExpected a filename containing "_hc_".\n\nLoad it anyway?`);
+      return true;
+    });
+    if (files.length) handleFiles(files);
+    inp.value = '';
+  });
+})();
+
+function handleFiles(fileList) {
+  errorMsg.textContent = '';
+  loadingMsg.style.display = 'block';
+  const files = Array.from(fileList);
+  let processed = 0;
+  const errors = [];
+  files.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      processed++;
+      try {
+        const { header, records } = parseCsv(e.target.result);
+        if (!records.length) throw new Error(`No data rows in "${file.name}".`);
+        const type = detectType(header);
+        if (!type) throw new Error(`Cannot detect type for "${file.name}" — check column names.`);
+        if (type === 'advisor') ADV_ALL = records;
+        if (type === 'monitor') MON_ALL = records;
+        if (type === 'policy')  POL_ALL = records;
+      } catch (err) {
+        errors.push(err.message);
+      }
+      if (processed === files.length) {
+        loadingMsg.style.display = 'none';
+        if (errors.length) errorMsg.textContent = '❌ ' + errors.join('  |  ');
+        updateFileStatus();
+        if (ADV_ALL.length || MON_ALL.length || POL_ALL.length) buildBtn.style.display = '';
+      }
+    };
+    reader.onerror = () => {
+      processed++;
+      errors.push(`Failed to read "${file.name}".`);
+      if (processed === files.length) {
+        loadingMsg.style.display = 'none';
+        errorMsg.textContent = '❌ ' + errors.join('  |  ');
+      }
+    };
+    reader.readAsText(file, 'utf-8');
+  });
+}
+
+function updateFileStatus() {
+  const list = document.getElementById('fileStatusList');
+  const zone = document.getElementById('dropZoneMain');
+  const items = [];
+  if (ADV_ALL.length) items.push(`💡 Advisor — ${ADV_ALL.length} recommendations`);
+  if (MON_ALL.length) items.push(`🔔 Monitor — ${MON_ALL.length} alert rules`);
+  if (POL_ALL.length) items.push(`📋 Policy — ${POL_ALL.length} violations`);
+  list.innerHTML = items.map(i => `<div class="file-status-item">${i}</div>`).join('');
+  if (items.length) zone.classList.add('loaded'); else zone.classList.remove('loaded');
+}
+
+buildBtn.addEventListener('click', () => showDashboard('Health Check'));
+
+document.getElementById('reloadBtn').addEventListener('click', () => {
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('uploadScreen').style.display = 'flex';
+  ADV_ALL = []; MON_ALL = []; POL_ALL = []; ACTIVE_SUBS = new Set();
+  document.getElementById('dropZoneMain').classList.remove('loaded');
+  document.getElementById('fileStatusList').innerHTML = '';
+  buildBtn.style.display = 'none';
+  errorMsg.textContent = '';
+  [_chartAdv, _chartMon, _chartPol].forEach(c => { if (c) c.destroy(); });
+  _chartAdv = _chartMon = _chartPol = null;
+});
+
+// ════════════════════════════════════════════════════════════
+// SHOW DASHBOARD
+// ════════════════════════════════════════════════════════════
+function showDashboard(label) {
+  document.getElementById('uploadScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'block';
+  document.getElementById('dashTitle').textContent =
+    (label && label !== 'Health Check' ? label + ' — ' : '') + 'Azure Health Check Dashboard';
+  const sources = [ADV_ALL, MON_ALL, POL_ALL].filter(a => a.length > 0).length;
+  const total   = ADV_ALL.length + MON_ALL.length + POL_ALL.length;
+  document.getElementById('dashMeta').textContent = `${total} items · ${sources} data source${sources !== 1 ? 's' : ''}`;
+  buildFilterBar();
+  renderAll();
+}
+
+// ════════════════════════════════════════════════════════════
+// FILTERED VIEWS
+// ════════════════════════════════════════════════════════════
+const filteredAdv = () => ACTIVE_SUBS.size ? ADV_ALL.filter(r => ACTIVE_SUBS.has(r.subscription_name || r.subscription_id)) : ADV_ALL;
+const filteredMon = () => ACTIVE_SUBS.size ? MON_ALL.filter(r => ACTIVE_SUBS.has(r.subscription_name || r.subscription_id)) : MON_ALL;
+const filteredPol = () => ACTIVE_SUBS.size ? POL_ALL.filter(r => ACTIVE_SUBS.has(r.subscription_name || r.subscription_id)) : POL_ALL;
+
+function renderAll() {
+  const adv = filteredAdv(), mon = filteredMon(), pol = filteredPol();
+  renderKpis(adv, mon, pol);
+  document.getElementById('sect-adv').style.display = ADV_ALL.length ? '' : 'none';
+  document.getElementById('sect-mon').style.display = MON_ALL.length ? '' : 'none';
+  document.getElementById('sect-pol').style.display = POL_ALL.length ? '' : 'none';
+  if (ADV_ALL.length) renderAdvisor(adv);
+  if (MON_ALL.length) renderMonitor(mon);
+  if (POL_ALL.length) renderPolicy(pol);
+}
+
+// ════════════════════════════════════════════════════════════
+// FILTER BAR
+// ════════════════════════════════════════════════════════════
+function buildFilterBar() {
+  const allSubs = [...new Set(
+    [...ADV_ALL, ...MON_ALL, ...POL_ALL]
+      .map(r => r.subscription_name || r.subscription_id)
+      .filter(Boolean)
+  )].sort();
+
+  const bar = document.getElementById('filterBar');
+  bar.innerHTML = '<span class="filter-label">Filters</span>';
+  if (!allSubs.length) return;
+
+  const group = document.createElement('div');
+  group.className = 'filter-group';
+  const countLabel = ACTIVE_SUBS.size === 0 ? 'All' : `${ACTIVE_SUBS.size}/${allSubs.length}`;
+  group.innerHTML = `
+    <button class="filter-btn">
+      📋 Subscription <span class="count">${countLabel}</span> <span class="arrow">▼</span>
+    </button>
+    <div class="filter-dropdown">
+      <div class="filter-actions">
+        <button data-action="all">Select All</button>
+        <button data-action="none">Select None</button>
+      </div>
+      <div class="filter-search"><input type="text" placeholder="Search…"></div>
+      <div class="filter-list"></div>
+    </div>`;
+
+  const list = group.querySelector('.filter-list');
+  allSubs.forEach(sub => {
+    const checked = ACTIVE_SUBS.size === 0 || ACTIVE_SUBS.has(sub);
+    const item = document.createElement('div');
+    item.className = 'filter-item';
+    item.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''} value="${esc(sub)}"><label title="${esc(sub)}">${esc(sub)}</label>`;
+    const cb = item.querySelector('input');
+    cb.addEventListener('change', onSubChange);
+    item.querySelector('label').addEventListener('click', e => { e.preventDefault(); cb.checked = !cb.checked; onSubChange(); });
+    list.appendChild(item);
+  });
+
+  group.querySelector('.filter-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    const wasOpen = group.classList.contains('open');
+    document.querySelectorAll('.filter-group').forEach(g => g.classList.remove('open'));
+    if (!wasOpen) group.classList.add('open');
+  });
+  group.querySelector('.filter-search input').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    list.querySelectorAll('.filter-item').forEach(item => {
+      item.style.display = item.querySelector('input').value.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+  group.querySelectorAll('.filter-actions button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const a = btn.dataset.action;
+      list.querySelectorAll('input[type=checkbox]').forEach(cb => {
+        if (cb.closest('.filter-item').style.display !== 'none') cb.checked = a === 'all';
+      });
+      onSubChange();
+    });
+  });
+  bar.appendChild(group);
+
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'filter-reset-all';
+  resetBtn.textContent = 'Reset All';
+  resetBtn.addEventListener('click', () => { ACTIVE_SUBS = new Set(); buildFilterBar(); renderAll(); });
+  bar.appendChild(resetBtn);
+
+  document.addEventListener('click', () => document.querySelectorAll('.filter-group').forEach(g => g.classList.remove('open')));
+  bar.addEventListener('click', e => e.stopPropagation());
+}
+
+function onSubChange() {
+  const group = document.querySelector('.filter-group');
+  if (!group) return;
+  const allSubs = [...new Set([...ADV_ALL, ...MON_ALL, ...POL_ALL]
+    .map(r => r.subscription_name || r.subscription_id).filter(Boolean))];
+  const sel = new Set();
+  group.querySelectorAll('.filter-list input:checked').forEach(cb => sel.add(cb.value));
+  ACTIVE_SUBS = (sel.size === 0 || sel.size === allSubs.length) ? new Set() : sel;
+  group.querySelector('.count').textContent =
+    ACTIVE_SUBS.size === 0 ? 'All' : `${ACTIVE_SUBS.size}/${allSubs.length}`;
+  renderAll();
+}
+
+// ════════════════════════════════════════════════════════════
+// KPI ROW
+// ════════════════════════════════════════════════════════════
+function renderKpis(adv, mon, pol) {
+  const el       = document.getElementById('kpis');
+  const highAdv  = adv.filter(r => r.impact === 'High').length;
+  const disabled = mon.filter(r => String(r.enabled).toLowerCase() !== 'true').length;
+  const uniqPol  = new Set(pol.map(r => r.policy_definition_name)).size;
+
+  el.innerHTML = `
+    ${adv.length ? `<div class="kpi">
+      <div class="label">Advisor Recommendations</div>
+      <div class="value">${adv.length}</div>
+      <div class="sub-value">${highAdv > 0 ? `<span style="color:var(--red)">${highAdv} High impact</span>` : 'No high impact items'}</div>
+    </div>` : ''}
+    ${mon.length ? `<div class="kpi">
+      <div class="label">Monitor Alert Rules</div>
+      <div class="value">${mon.length}</div>
+      <div class="sub-value">${mon.length - disabled} enabled · ${disabled > 0 ? `<span style="color:var(--red)">${disabled} disabled</span>` : '0 disabled'}</div>
+    </div>` : ''}
+    ${pol.length ? `<div class="kpi">
+      <div class="label">Policy Violations</div>
+      <div class="value">${pol.length}</div>
+      <div class="sub-value">${uniqPol} unique polic${uniqPol !== 1 ? 'ies' : 'y'}</div>
+    </div>` : ''}
+    <div class="kpi">
+      <div class="label">Data Sources</div>
+      <div class="value">${[adv, mon, pol].filter(a => a.length > 0).length}</div>
+      <div class="sub-value">${[adv.length?'Advisor':'', mon.length?'Alerts':'', pol.length?'Policy':''].filter(Boolean).join(' · ')}</div>
+    </div>`;
+}
+
+// ════════════════════════════════════════════════════════════
+// ADVISOR
+// ════════════════════════════════════════════════════════════
+function renderAdvisor(adv) {
+  document.getElementById('advSummary').textContent =
+    `${adv.length} recommendations · ${adv.filter(r => r.impact === 'High').length} high impact`;
+
+  // Category stat cards
+  const cats = Object.entries(CAT_META);
+  document.getElementById('advCatCards').innerHTML = cats.map(([key, meta]) => {
+    const items = adv.filter(r => r.category === key);
+    const high  = items.filter(r => r.impact === 'High').length;
+    const p     = pct(high, items.length);
+    return `<div class="hc-stat-card" style="border-top-color:${meta.color}">
+      <div class="sc-icon">${meta.icon}</div>
+      <div class="sc-label">${meta.label}</div>
+      <div class="sc-count">${items.length}</div>
+      <div class="sc-sub">${high} high impact</div>
+      <div class="sc-bar"><div class="sc-bar-fill" style="width:${p}%;background:${meta.color}"></div></div>
+    </div>`;
+  }).join('');
+
+  // Chart: horizontal stacked bar — category × impact
+  if (_chartAdv) { _chartAdv.destroy(); _chartAdv = null; }
+  const activeCats = cats.filter(([key]) => adv.some(r => r.category === key));
+  const labels   = activeCats.map(([, m]) => m.label);
+  const highData = activeCats.map(([key]) => adv.filter(r => r.category === key && r.impact === 'High').length);
+  const medData  = activeCats.map(([key]) => adv.filter(r => r.category === key && r.impact === 'Medium').length);
+  const lowData  = activeCats.map(([key]) => adv.filter(r => r.category === key && r.impact === 'Low').length);
+  const { textC, borderC } = axisColors();
+  _chartAdv = new Chart(document.getElementById('chartAdv').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'High',   data: highData, backgroundColor: '#d9232999', borderRadius: 4, barPercentage: .72 },
+        { label: 'Medium', data: medData,  backgroundColor: '#f59e4299', borderRadius: 4, barPercentage: .72 },
+        { label: 'Low',    data: lowData,  backgroundColor: '#76d07799', borderRadius: 4, barPercentage: .72 },
+      ],
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true, ticks: { font: { family: "'JetBrains Mono'", size: 10 } }, grid: { display: false } },
+        y: { stacked: true, ticks: { font: { size: 11 }, color: textC }, grid: { display: false } },
+      },
+      plugins: {
+        legend: { display: true, labels: { color: textC, font: { size: 11 } } },
+        tooltip: { ...tooltipCfg() },
+      },
+    },
+  });
+
+  // Detail table — High first
+  const sorted = [...adv].sort((a, b) => {
+    const order = { High: 0, Medium: 1, Low: 2 };
+    return (order[a.impact] ?? 3) - (order[b.impact] ?? 3);
+  });
+  let html = `<thead><tr>
+    <th class="col-s">Subscription</th>
+    <th>Resource Group</th>
+    <th>Resource</th>
+    <th>Category</th>
+    <th>Impact</th>
+    <th style="min-width:200px">Issue</th>
+  </tr></thead><tbody>`;
+  sorted.forEach(r => {
+    const rg   = rgFromId(r.resource_id) || r.resource_group || '';
+    const res  = nameFromId(r.resource_id || r.impacted_value || '');
+    const meta = CAT_META[r.category] || { icon: '●', color: 'var(--text-dim)' };
+    html += `<tr>
+      <td class="col-s td-dim" title="${esc(r.subscription_name || '')}">${esc(r.subscription_name || r.subscription_id || '')}</td>
+      <td class="td-dim" title="${esc(rg)}">${esc(rg)}</td>
+      <td class="td-mono" title="${esc(r.resource_id || '')}">${esc(res)}</td>
+      <td style="white-space:nowrap"><span style="color:${meta.color};font-size:12px;font-weight:600">${meta.icon} ${esc(r.category || '')}</span></td>
+      <td>${impactBadge(r.impact)}</td>
+      <td class="td-desc" title="${esc(r.short_description_problem || '')}">${esc(r.short_description_problem || '')}</td>
+    </tr>`;
+  });
+  document.getElementById('advTable').innerHTML = html + '</tbody>';
+}
+
+// ════════════════════════════════════════════════════════════
+// MONITOR
+// ════════════════════════════════════════════════════════════
+function renderMonitor(mon) {
+  const enabled  = mon.filter(r => String(r.enabled).toLowerCase() === 'true').length;
+  const disabled = mon.length - enabled;
+  document.getElementById('monSummary').textContent =
+    `${mon.length} rules · ${enabled} enabled · ${disabled} disabled`;
+
+  // Stat cards
+  const typeMap = {};
+  mon.forEach(r => {
+    const t = r.type ? r.type.split('/').pop() : 'Unknown';
+    typeMap[t] = (typeMap[t] || 0) + 1;
+  });
+  const cards = [
+    { icon: '✅', label: 'Enabled',  count: enabled,  color: '#76d077',  sub: `${pct(enabled, mon.length)}% of total` },
+    { icon: '⛔', label: 'Disabled', count: disabled, color: disabled > 0 ? '#d92329' : '#8892a4', sub: disabled > 0 ? 'Need attention' : 'All active' },
+    ...Object.entries(typeMap).map(([t, n]) => ({ icon: '🔔', label: t, count: n, color: '#38bdf8', sub: 'rule type' })),
+  ];
+  document.getElementById('monStatCards').innerHTML = cards.map(c =>
+    `<div class="hc-stat-card" style="border-top-color:${c.color}">
+      <div class="sc-icon">${c.icon}</div>
+      <div class="sc-label">${esc(c.label)}</div>
+      <div class="sc-count">${c.count}</div>
+      <div class="sc-sub">${esc(c.sub)}</div>
+    </div>`
+  ).join('');
+
+  // Chart: vertical bar by severity
+  if (_chartMon) { _chartMon.destroy(); _chartMon = null; }
+  const sevKeys   = ['0','1','2','3','4'];
+  const sevCounts = {};
+  mon.forEach(r => { const s = String(r.severity || ''); sevCounts[s] = (sevCounts[s] || 0) + 1; });
+  const activeSevs = sevKeys.filter(k => sevCounts[k]);
+  const sevLabels  = activeSevs.map(k => SEV_META[k]?.label || k);
+  const sevData    = activeSevs.map(k => sevCounts[k] || 0);
+  const sevColors  = activeSevs.map(k => (SEV_META[k]?.color || '#8892a4') + 'cc');
+  const { textC, borderC } = axisColors();
+  _chartMon = new Chart(document.getElementById('chartMon').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: sevLabels,
+      datasets: [{ label: 'Alert Rules', data: sevData, backgroundColor: sevColors, borderRadius: 6, barPercentage: .6 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { color: textC, font: { size: 11 } }, grid: { display: false } },
+        y: { ticks: { font: { family: "'JetBrains Mono'", size: 10 } }, grid: { color: borderC + '44' } },
+      },
+      plugins: { legend: { display: false }, tooltip: { ...tooltipCfg() } },
+    },
+  });
+
+  // Detail table — disabled first, then by severity
+  const sorted = [...mon].sort((a, b) => {
+    const ae = String(a.enabled).toLowerCase() === 'true';
+    const be = String(b.enabled).toLowerCase() === 'true';
+    if (ae !== be) return ae ? 1 : -1;
+    return (Number(a.severity) || 99) - (Number(b.severity) || 99);
+  });
+  let html = `<thead><tr>
+    <th class="col-s">Subscription</th>
+    <th class="col-n">Name</th>
+    <th>Type</th>
+    <th>Severity</th>
+    <th>Enabled</th>
+    <th>Target Resource Type</th>
+    <th>Location</th>
+  </tr></thead><tbody>`;
+  sorted.forEach(r => {
+    const sev  = String(r.severity || '');
+    const sevM = SEV_META[sev] || { label: sev || '—', color: '#8892a4' };
+    const rType = r.target_resource_type ? r.target_resource_type.split('/').pop() : '';
+    html += `<tr>
+      <td class="col-s td-dim" title="${esc(r.subscription_name || '')}">${esc(r.subscription_name || r.subscription_id || '')}</td>
+      <td class="col-n" title="${esc(r.name || '')}">${esc(r.name || '')}</td>
+      <td class="td-dim">${esc(r.type ? r.type.split('/').pop() : '')}</td>
+      <td style="white-space:nowrap"><span style="color:${sevM.color};font-size:12px;font-weight:600">${esc(sevM.label)}</span></td>
+      <td>${enabledBadge(r.enabled)}</td>
+      <td class="td-dim" title="${esc(r.target_resource_type || '')}">${esc(rType)}</td>
+      <td class="td-dim">${esc(r.location || '')}</td>
+    </tr>`;
+  });
+  document.getElementById('monTable').innerHTML = html + '</tbody>';
+}
+
+// ════════════════════════════════════════════════════════════
+// POLICY
+// ════════════════════════════════════════════════════════════
+function renderPolicy(pol) {
+  const uniq = new Set(pol.map(r => r.policy_definition_name)).size;
+  document.getElementById('polSummary').textContent =
+    `${pol.length} violations · ${uniq} unique polic${uniq !== 1 ? 'ies' : 'y'}`;
+
+  // Action stat cards
+  const actionMap = {};
+  pol.forEach(r => {
+    const a = r.policy_definition_action || 'Unknown';
+    actionMap[a] = (actionMap[a] || 0) + 1;
+  });
+  document.getElementById('polActionCards').innerHTML = Object.entries(actionMap)
+    .sort((a, b) => b[1] - a[1])
+    .map(([action, count]) => {
+      const lv   = action.toLowerCase();
+      const color = lv.includes('deny') ? '#d92329' : lv.includes('audit') ? '#f59e42' : '#a78bfa';
+      return `<div class="hc-stat-card" style="border-top-color:${color}">
+        <div class="sc-icon">${lv.includes('deny') ? '⛔' : '📝'}</div>
+        <div class="sc-label">${esc(action)}</div>
+        <div class="sc-count">${count}</div>
+        <div class="sc-sub">${pct(count, pol.length)}% of violations</div>
+      </div>`;
+    }).join('');
+
+  // Chart: horizontal bar — top 10 policies by count
+  if (_chartPol) { _chartPol.destroy(); _chartPol = null; }
+  const polMap = {};
+  pol.forEach(r => {
+    const name = r.policy_definition_name || 'Unknown';
+    polMap[name] = (polMap[name] || 0) + 1;
+  });
+  const topPols   = Object.entries(polMap).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  const polLabels = topPols.map(([name]) => name.length > 32 ? name.slice(0, 32) + '…' : name);
+  const polData   = topPols.map(([, n]) => n);
+  const polColors = topPols.map(([name]) => {
+    const action = (pol.find(r => r.policy_definition_name === name)?.policy_definition_action || '').toLowerCase();
+    return action.includes('deny') ? '#d9232999' : '#f59e4299';
+  });
+  const { textC, borderC } = axisColors();
+  _chartPol = new Chart(document.getElementById('chartPol').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: polLabels,
+      datasets: [{ label: 'Violations', data: polData, backgroundColor: polColors, borderRadius: 4, barPercentage: .72 }],
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { font: { family: "'JetBrains Mono'", size: 10 } }, grid: { display: false } },
+        y: { ticks: { font: { size: 10 }, color: textC }, grid: { display: false } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          ...tooltipCfg(),
+          callbacks: { title: items => topPols[items[0].dataIndex][0] },
+        },
+      },
+    },
+  });
+
+  // Detail table — deny first, then by policy name
+  const sorted = [...pol].sort((a, b) => {
+    const da = (a.policy_definition_action || '').toLowerCase().includes('deny');
+    const db = (b.policy_definition_action || '').toLowerCase().includes('deny');
+    if (da !== db) return da ? -1 : 1;
+    return (a.policy_definition_name || '').localeCompare(b.policy_definition_name || '');
+  });
+  let html = `<thead><tr>
+    <th class="col-s">Subscription</th>
+    <th class="col-r">Resource Group</th>
+    <th>Policy</th>
+    <th>Action</th>
+    <th>Resource Type</th>
+    <th>Resource</th>
+  </tr></thead><tbody>`;
+  sorted.forEach(r => {
+    const res = nameFromId(r.resource_id || '');
+    const rt  = r.resource_type ? r.resource_type.split('/').pop() : '';
+    html += `<tr>
+      <td class="col-s td-dim" title="${esc(r.subscription_name || '')}">${esc(r.subscription_name || r.subscription_id || '')}</td>
+      <td class="col-r td-dim">${esc(r.resource_group || '')}</td>
+      <td style="font-size:12px" title="${esc(r.policy_definition_name || '')}">${esc(r.policy_definition_name || '')}</td>
+      <td>${actionBadge(r.policy_definition_action)}</td>
+      <td class="td-dim" title="${esc(r.resource_type || '')}">${esc(rt)}</td>
+      <td class="td-mono" title="${esc(r.resource_id || '')}">${esc(res)}</td>
+    </tr>`;
+  });
+  document.getElementById('polTable').innerHTML = html + '</tbody>';
+}
+
+// ════════════════════════════════════════════════════════════
+// [DevOps section moved to devops_dashboard.html]
+// ════════════════════════════════════════════════════════════
+/*
+function renderDevOps(dev) {
+  const bugs  = dev.filter(r => r.type === 'Bug').length;
+  const tasks = dev.filter(r => r.type === 'Task').length;
+  document.getElementById('devSummary').textContent =
+    `${dev.length} work items · ${bugs} bugs · ${tasks} tasks`;
+
+  // Type + priority stat cards
+  const priMap = {};
+  dev.forEach(r => { const p = r.priority || '3'; priMap[p] = (priMap[p] || 0) + 1; });
+  const cards = [
+    { icon: '🐛', label: 'Bugs',  count: bugs,  color: '#d92329', sub: `${dev.filter(r=>r.type==='Bug'&&r.priority==='1').length} critical` },
+    { icon: '📌', label: 'Tasks', count: tasks, color: '#38bdf8', sub: `${dev.filter(r=>r.type==='Task'&&r.priority==='1').length} critical` },
+    ...['1','2','3','4'].map(p => {
+      const m = PRI_META[p];
+      return { icon: '●', label: `P${p} ${m.label}`, count: priMap[p] || 0, color: m.color, sub: 'priority' };
+    }),
+  ];
+  document.getElementById('devTypeCards').innerHTML = cards.map(c =>
+    `<div class="hc-stat-card" style="border-top-color:${c.color}">
+      <div class="sc-icon">${c.icon}</div>
+      <div class="sc-label">${esc(c.label)}</div>
+      <div class="sc-count">${c.count}</div>
+      <div class="sc-sub">${esc(c.sub)}</div>
+    </div>`
+  ).join('');
+
+  // Chart: grouped bar — Bug vs Task per priority
+  if (_chartDev) { _chartDev.destroy(); _chartDev = null; }
+  const pris    = ['1','2','3','4'];
+  const priLbls = pris.map(p => `P${p} ${PRI_META[p].label}`);
+  const bugD    = pris.map(p => dev.filter(r => r.type === 'Bug'  && r.priority === p).length);
+  const taskD   = pris.map(p => dev.filter(r => r.type === 'Task' && r.priority === p).length);
+  const { textC, borderC } = axisColors();
+  _chartDev = new Chart(document.getElementById('chartDev').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: priLbls,
+      datasets: [
+        { label: 'Bugs',  data: bugD,  backgroundColor: '#d9232999', borderRadius: 4, barPercentage: .8 },
+        { label: 'Tasks', data: taskD, backgroundColor: '#38bdf899', borderRadius: 4, barPercentage: .8 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { color: textC, font: { size: 11 } }, grid: { display: false } },
+        y: { ticks: { font: { family: "'JetBrains Mono'", size: 10 } }, grid: { color: borderC + '44' } },
+      },
+      plugins: {
+        legend: { display: true, labels: { color: textC, font: { size: 11 } } },
+        tooltip: { ...tooltipCfg() },
+      },
+    },
+  });
+
+  // Detail table — priority asc, Bug before Task
+  const sorted = [...dev].sort((a, b) => {
+    const pa = Number(a.priority) || 99, pb = Number(b.priority) || 99;
+    if (pa !== pb) return pa - pb;
+    return a.type === 'Bug' ? -1 : 1;
+  });
+  let html = `<thead><tr>
+    <th>Priority</th>
+    <th style="font-family:var(--font-mono)">ID</th>
+    <th style="min-width:240px">Title</th>
+    <th>Type</th>
+    <th>State</th>
+    <th>Assigned To</th>
+    <th>Created</th>
+  </tr></thead><tbody>`;
+  sorted.forEach(r => {
+    const p   = r.priority || '3';
+    const pM  = PRI_META[p] || { label: p, color: '#8892a4' };
+    const created = r.created_date ? r.created_date.split('T')[0] : '';
+    html += `<tr>
+      <td style="white-space:nowrap"><span style="color:${pM.color};font-size:12px;font-weight:600">P${p} ${esc(pM.label)}</span></td>
+      <td class="td-mono">${esc(r.id || '')}</td>
+      <td class="td-desc" title="${esc(r.title || '')}">${esc(r.title || '')}</td>
+      <td style="font-size:12px">${r.type === 'Bug' ? '🐛 Bug' : '📌 Task'}</td>
+      <td class="td-dim">${esc(r.state || '')}</td>
+      <td class="td-dim" title="${esc(r.assigned_to || '')}">${esc(r.assigned_to || '—')}</td>
+      <td class="td-mono td-dim">${created}</td>
+    </tr>`;
+  });
+  document.getElementById('devTable').innerHTML = html + '</tbody>';
+}
+*/
+
+// ════════════════════════════════════════════════════════════
+// COLLAPSIBLE SECTIONS
+// ════════════════════════════════════════════════════════════
+function toggleSection(headerEl) {
+  headerEl.closest('.env-section').classList.toggle('collapsed');
+}
+
+// ════════════════════════════════════════════════════════════
+// THEME TOGGLE
+// ════════════════════════════════════════════════════════════
+function applyThemeToggle() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('dco-theme', next);
+  if (ADV_ALL.length || MON_ALL.length || POL_ALL.length) {
+    const adv = filteredAdv(), mon = filteredMon(), pol = filteredPol();
+    if (ADV_ALL.length) renderAdvisor(adv);
+    if (MON_ALL.length) renderMonitor(mon);
+    if (POL_ALL.length) renderPolicy(pol);
+  }
+}
+document.getElementById('themeToggle').addEventListener('click', applyThemeToggle);
+document.getElementById('themeToggleUpload').addEventListener('click', applyThemeToggle);
+
+// ════════════════════════════════════════════════════════════
+// DEMO DATA
+// ════════════════════════════════════════════════════════════
+document.getElementById('demoBtn').addEventListener('click', () => {
+  ADV_ALL = _genAdvDemo();
+  MON_ALL = _genMonDemo();
+  POL_ALL = _genPolDemo();
+  showDashboard('Demo');
+});
+
+function _lcg(seed) {
+  let s = seed;
+  return () => { s = (s * 1664525 + 1013904223) & 0xffffffff; return (s >>> 0) / 0xffffffff; };
+}
+
+function _genAdvDemo() {
+  const rnd = _lcg(11);
+  const subs    = ['hub-prd-sub-supportingservices','dp-prd-sub','fh-prd-sub','cp-prd-sub','dp-dev-sub'];
+  const cats    = ['Cost','Security','HighAvailability','Performance','OperationalExcellence'];
+  const impacts = ['High','High','Medium','Medium','Medium','Low'];
+  const issues  = {
+    Cost:                  ['Right-size or shutdown underutilized virtual machines','Delete unused public IP addresses','Consider Reservations for consistent workloads','Use Azure Hybrid Benefit for Windows VMs'],
+    Security:              ['Enable Just-in-Time VM access','Apply missing system updates on VMs','Remediate security configurations on machines','Enable endpoint protection on VMs','Enable MFA for privileged accounts'],
+    HighAvailability:      ['Enable soft delete for Blob storage','Add more instances to avoid single point of failure','Configure availability zones','Enable geo-redundant backup'],
+    Performance:           ['Improve App Service performance','Use read replicas for database read workloads','Enable caching on frequently accessed data'],
+    OperationalExcellence: ['Enable diagnostic logs for key services','Configure alerts for critical resources','Tag resources for cost attribution','Enable Azure Backup for VMs'],
+  };
+  const rTypes = ['virtualMachines','storageAccounts','sqlDatabases','appServicePlans','publicIPAddresses','disks'];
+  const rgs    = ['rg-mgmt','rg-data','rg-app','rg-shared','rg-security'];
+  const rows   = [];
+  subs.forEach(sub => {
+    const n = 3 + Math.floor(rnd() * 8);
+    for (let i = 0; i < n; i++) {
+      const cat    = cats[Math.floor(rnd() * cats.length)];
+      const impact = impacts[Math.floor(rnd() * impacts.length)];
+      const issue  = issues[cat][Math.floor(rnd() * issues[cat].length)];
+      const rg     = rgs[Math.floor(rnd() * rgs.length)];
+      const rt     = rTypes[Math.floor(rnd() * rTypes.length)];
+      const name   = `${rt.slice(0,6)}-${sub.split('-')[0]}-${String(i+1).padStart(2,'0')}`;
+      rows.push({
+        subscription_id: `demo-${sub}`, subscription_name: sub,
+        id: `/subscriptions/demo/resourceGroups/${rg}/providers/Microsoft.Compute/${rt}/${name}`,
+        category: cat, impact,
+        impacted_field: `Microsoft.Compute/${rt}`, impacted_value: name,
+        short_description_problem: issue,
+        short_description_solution: `Apply the recommended fix for: ${issue}`,
+        resource_id: `/subscriptions/demo/resourceGroups/${rg}/providers/Microsoft.Compute/${rt}/${name}`,
+        last_updated: new Date(Date.now() - Math.floor(rnd() * 30) * 86400000).toISOString(),
+      });
+    }
+  });
+  return rows;
+}
+
+function _genMonDemo() {
+  const rnd  = _lcg(22);
+  const subs = ['hub-prd-sub-supportingservices','dp-prd-sub','fh-prd-sub','cp-prd-sub','dp-dev-sub'];
+  const types = ['microsoft.insights/metricalerts','microsoft.insights/activitylogalerts'];
+  const sevs  = ['0','0','1','1','2','2','2','3','4'];
+  const tgts  = ['Microsoft.Compute/virtualMachines','Microsoft.Storage/storageAccounts','Microsoft.Sql/servers','Microsoft.Web/sites','Microsoft.KeyVault/vaults','Microsoft.EventHub/namespaces'];
+  const rows = [];
+  subs.forEach(sub => {
+    const n = 4 + Math.floor(rnd() * 8);
+    for (let i = 0; i < n; i++) {
+      const t   = types[Math.floor(rnd() * types.length)];
+      const sev = sevs[Math.floor(rnd() * sevs.length)];
+      const tgt = tgts[Math.floor(rnd() * tgts.length)];
+      rows.push({
+        subscription_id: `demo-${sub}`, subscription_name: sub,
+        name:                `alert-${sub.split('-')[0]}-${String(i+1).padStart(2,'0')}`,
+        type:                t, severity: sev, enabled: String(rnd() > 0.15),
+        description:         `Alert rule for ${tgt.split('/').pop()} monitoring`,
+        target_resource_type: tgt, location: 'global', provisioning_state: 'Succeeded',
+      });
+    }
+  });
+  return rows;
+}
+
+function _genPolDemo() {
+  const rnd  = _lcg(33);
+  const subs = ['hub-prd-sub-supportingservices','dp-prd-sub','fh-prd-sub','cp-prd-sub','dp-dev-sub'];
+  const policies = [
+    { name: 'Audit VMs without managed disks',             action: 'audit' },
+    { name: 'Require tag Environment on resources',        action: 'deny' },
+    { name: 'Audit SQL Server Transparent Data Encryption',action: 'AuditIfNotExists' },
+    { name: 'Network Watcher should be enabled',           action: 'AuditIfNotExists' },
+    { name: 'Audit storage accounts without HTTPS',        action: 'audit' },
+    { name: 'Key Vault should use private endpoint',       action: 'AuditIfNotExists' },
+    { name: 'Geo-redundant backup should be enabled',      action: 'AuditIfNotExists' },
+    { name: 'MFA should be enabled for privileged accounts',action: 'AuditIfNotExists' },
+    { name: 'Log Analytics agent should be installed',     action: 'AuditIfNotExists' },
+    { name: 'Public network access should be disabled',    action: 'deny' },
+  ];
+  const rgs  = ['rg-mgmt','rg-data','rg-app','rg-shared','rg-security','rg-network'];
+  const types = ['Microsoft.Compute/virtualMachines','Microsoft.Storage/storageAccounts','Microsoft.Sql/servers','Microsoft.Web/sites','Microsoft.KeyVault/vaults'];
+  const rows = [];
+  subs.forEach(sub => {
+    const n = 2 + Math.floor(rnd() * 6);
+    for (let i = 0; i < n; i++) {
+      const pol = policies[Math.floor(rnd() * policies.length)];
+      const rg  = rgs[Math.floor(rnd() * rgs.length)];
+      const rt  = types[Math.floor(rnd() * types.length)];
+      const res = `${rt.split('/').pop().slice(0,4)}-${sub.split('-')[0]}-${String(i+1).padStart(2,'0')}`;
+      rows.push({
+        subscription_id: `demo-${sub}`, subscription_name: sub,
+        policy_assignment_name:   pol.name.replace(/\s/g,'-').toLowerCase().slice(0,30),
+        policy_definition_name:   pol.name,
+        policy_definition_action: pol.action,
+        compliance_state: 'NonCompliant',
+        resource_id:      `/subscriptions/demo/resourceGroups/${rg}/providers/${rt}/${res}`,
+        resource_type: rt, resource_group: rg,
+        timestamp: new Date(Date.now() - Math.floor(rnd() * 7) * 86400000).toISOString(),
+      });
+    }
+  });
+  return rows;
+}
+
+/*
+function _genDevDemo() {
+  const rnd = _lcg(44);
+  const bugTitles = [
+    'API gateway returning 500 errors intermittently',
+    'Memory leak in background worker service',
+    'Database connection pool exhaustion under load',
+    'SSL certificate not renewed on prod endpoint',
+    'Event hub consumer group lag exceeding threshold',
+    'Function app cold start exceeding 10 seconds',
+    'Storage access key exposed in application logs',
+    'Alert rule firing false positives on weekends',
+    'Runbook failing silently on monthly schedule',
+    'Log Analytics workspace quota exceeded',
+  ];
+  const taskTitles = [
+    'Upgrade AKS cluster to latest supported version',
+    'Enable private endpoints for all Key Vaults',
+    'Configure diagnostic settings on all NSGs',
+    'Apply missing patches to Dev VMs',
+    'Review and tighten NSG inbound rules',
+    'Tag all untagged production resources',
+    'Set up geo-replication for SQL Database',
+    'Enable Defender for Cloud on new subscriptions',
+    'Migrate legacy storage account to StorageV2',
+    'Document runbook for monthly patching procedure',
+    'Create cost anomaly alert dashboard',
+    'Review expiring service principal credentials',
+  ];
+  const states    = ['Active','New','In Progress','Committed'];
+  const assignees = ['Thomas.VanDamme','Jonas.Claes','Sarah.Devos','Lien.Pieters','Unassigned','Unassigned','David.Martens','Charlotte.Adams'];
+  const pris      = ['1','1','2','2','2','3','3','3','4'];
+  const areas     = ['Cloud Platform\\Network','Cloud Platform\\Security','Cloud Platform\\App','Cloud Platform\\Data','Cloud Platform\\DevOps'];
+  const rows = [];
+  const nBugs  = 6 + Math.floor(rnd() * 8);
+  const nTasks = 8 + Math.floor(rnd() * 10);
+  for (let i = 0; i < nBugs; i++) {
+    rows.push({
+      id:             String(1000 + Math.floor(rnd() * 9000)),
+      title:          bugTitles[Math.floor(rnd() * bugTitles.length)],
+      type: 'Bug', state: states[Math.floor(rnd() * states.length)],
+      priority:       pris[Math.floor(rnd() * pris.length)],
+      assigned_to:    assignees[Math.floor(rnd() * assignees.length)],
+      area_path:      areas[Math.floor(rnd() * areas.length)],
+      iteration_path: 'Cloud Platform\\Sprint 42',
+      created_date:   new Date(Date.now() - Math.floor(rnd() * 60) * 86400000).toISOString(),
+      changed_date:   new Date(Date.now() - Math.floor(rnd() * 7)  * 86400000).toISOString(),
+    });
+  }
+  for (let i = 0; i < nTasks; i++) {
+    rows.push({
+      id:             String(2000 + Math.floor(rnd() * 9000)),
+      title:          taskTitles[Math.floor(rnd() * taskTitles.length)],
+      type: 'Task', state: states[Math.floor(rnd() * states.length)],
+      priority:       pris[Math.floor(rnd() * pris.length)],
+      assigned_to:    assignees[Math.floor(rnd() * assignees.length)],
+      area_path:      areas[Math.floor(rnd() * areas.length)],
+      iteration_path: 'Cloud Platform\\Sprint 42',
+      created_date:   new Date(Date.now() - Math.floor(rnd() * 60) * 86400000).toISOString(),
+      changed_date:   new Date(Date.now() - Math.floor(rnd() * 7)  * 86400000).toISOString(),
+    });
+  }
+  return rows;
+}
+*/
+
+// ══════════════════════════════════════════════════════════════
+// STORAGE-BASED FILE LOADING
+// ══════════════════════════════════════════════════════════════
+function ensureStorageSpinner(){
+  let spinner=document.getElementById('storageSpinner');
+  if(spinner)return spinner;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  spinner=document.createElement('div');
+  spinner.id='storageSpinner';
+  spinner.innerHTML='<div class="spinner-ring"></div><div class="spinner-label">Loading data from Azure Storage...<div class="spinner-step" id="spinnerStep">Connecting...</div></div>';
+  uploadScreen.insertBefore(spinner, uploadScreen.firstElementChild ? uploadScreen.firstElementChild.nextSibling : null);
+  return spinner;
+}
+
+function setStorageSpinner(stepText){
+  const spinner=ensureStorageSpinner();
+  const stepEl=document.getElementById('spinnerStep');
+  if(stepEl&&stepText)stepEl.textContent=stepText;
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      if(el.dataset.prevDisplay===undefined)el.dataset.prevDisplay=el.style.display||'';
+      el.style.display='none';
+    });
+  }
+
+  spinner.style.display='flex';
+}
+
+function hideStorageSpinner(){
+  const spinner=document.getElementById('storageSpinner');
+  if(spinner)spinner.style.display='none';
+
+  const uploadScreen=document.getElementById('uploadScreen');
+  if(uploadScreen){
+    Array.from(uploadScreen.children).forEach(el=>{
+      if(el.id==='storageSpinner')return;
+      const prev=(el.dataset.prevDisplay!==undefined)?el.dataset.prevDisplay:'';
+      el.style.display=prev;
+      delete el.dataset.prevDisplay;
+    });
+  }
+}
+window.onFilesLoaded = function(loadedFiles) {
+  for (const file of loadedFiles) {
+    const csvFile = new File([file.content], file.name, { type: 'text/csv' });
+    handleFiles([csvFile]);
+  }
+  
+  hideFileUploadUI();
+};
+
+async function autoLoadFromStorage() {
+  const dashboardId = 'health_checks';
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+
+  if (hasConnection) {
+    setStorageSpinner('Connecting...');
+  }
+
+  const loaded = await initStorageFileLoader(dashboardId, (step) => {
+    setStorageSpinner(step || 'Loading...');
+  });
+
+  if (!loaded) {
+    hideStorageSpinner();
+    showFileUploadUI();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+</script>
+<script src="../bin/table-sort.js"></script>
+</body>
+</html>
+
+

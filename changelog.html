@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro-Active Managed Services - Changelog</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="bin/dashboard-core.css">
+    <script>
+        // Apply preferred theme before paint to avoid flash.
+        (function () {
+            const saved = localStorage.getItem('dco-theme');
+            const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+            document.documentElement.setAttribute('data-theme', preferred);
+        })();
+    </script>
+    <style>
+        .changelog-wrap {
+            max-width: 980px;
+            margin: 0 auto;
+            padding: 48px 0 80px;
+        }
+
+        .changelog-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 14px;
+            margin-bottom: 22px;
+        }
+
+        .changelog-head-main {
+            min-width: 0;
+        }
+
+        .changelog-head-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .changelog-head h1 {
+            margin: 0 0 6px;
+            font-size: 30px;
+            letter-spacing: -0.6px;
+        }
+
+        .changelog-head p {
+            margin: 0;
+            color: var(--text-dim);
+            font-size: 14px;
+        }
+
+        @media (max-width: 720px) {
+            .changelog-head {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .changelog-head-actions {
+                width: 100%;
+            }
+        }
+
+        .changelog-table-wrap {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: auto;
+        }
+
+        .changelog-table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 700px;
+        }
+
+        .changelog-table th,
+        .changelog-table td {
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--border-soft);
+            vertical-align: top;
+            font-size: 13px;
+        }
+
+        .changelog-table th {
+            background: color-mix(in srgb, var(--surface-2) 80%, transparent);
+            text-align: left;
+            font-size: 12px;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            color: var(--text-dim);
+        }
+
+        .changelog-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .col-version {
+            width: 140px;
+            font-family: var(--font-mono);
+        }
+
+        .col-date {
+            width: 140px;
+            font-family: var(--font-mono);
+        }
+
+        .col-author {
+            width: 180px;
+        }
+
+        .hint {
+            margin-top: 14px;
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+    </style>
+</head>
+
+<body class="ambient-glow">
+    <div class="dash-container">
+        <div class="changelog-wrap">
+            <div class="changelog-head">
+                <div class="changelog-head-main">
+                    <h1>Changelog</h1>
+                    <p>Track dashboard and reporting updates by version.</p>
+                </div>
+                <div class="changelog-head-actions">
+                    <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode">
+                        <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
+                    </button>
+                    <a class="btn btn--ghost" href="index.html">← Back to portal</a>
+                </div>
+            </div>
+
+            <div class="changelog-table-wrap">
+                <table class="changelog-table" aria-label="Project changelog">
+                    <thead>
+                        <tr>
+                            <th class="col-version">Version</th>
+                            <th class="col-author">Author</th>
+                            <th>Comment</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td class="col-version">v2026.04.30</td>
+                            <td class="col-author">Samuel Varlet</td>
+                            <td>Initial version of data extractor and dashboaring</td>
+                        </tr>
+                        <tr>
+                            <td class="col-version">v2026.04.28</td>
+                            <td class="col-author">Samuel Varlet</td>
+                            <td>BREAKING CHANGE: Improved data collection scripts, splitting summary & telemetry data
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="col-version">v2026.05.06</td>
+                            <td class="col-author">Samuel Varlet</td>
+                            <td>New feature: Export cost to excel
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="col-version">v2026.05.07</td>
+                            <td class="col-author">Samuel Varlet</td>
+                            <td>New feature: Container App dashboard: Summation of CPU/MEM per workload profile
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="col-version">v2026.05.08</td>
+                            <td class="col-author">Samuel Varlet</td>
+                            <td>New feature: Auto load CSV data based on storage account connection string
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <script>
+        document.getElementById('themeToggle').addEventListener('click', () => {
+            const html = document.documentElement;
+            const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', next);
+            localStorage.setItem('dco-theme', next);
+        });
+    </script>
+</body>
+
+</html>

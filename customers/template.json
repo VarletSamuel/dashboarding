@@ -1,0 +1,20 @@
+{
+    "authentication": {
+        "app_registration_name": "",
+        "client_id": ""
+    },
+    "azure": [
+        {
+            "tenant_id": "",
+            "subscription_id": "",
+            "subscription_name": ""
+        }
+    ],
+    "devops": [
+        {
+            "tenant_id": "",
+            "org": "",
+            "project": ""
+        }
+    ]
+}
