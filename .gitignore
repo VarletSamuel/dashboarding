@@ -1,0 +1,13 @@
+# Secrets
+.env
+*.local
+
+# Sensitive customer files
+customers/
+extractor/__pycache__/
+reports/
+templates/YYYY-MM-DD_CUSTOMER_CostManagement.docx
+
+# IDE
+.venv/
+.vscode/
