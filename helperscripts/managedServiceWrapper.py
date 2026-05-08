@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ManagedServiceWrapper.py
+managedServiceWrapper.py
 ========================
 Orchestrator that logs in to every Azure tenant for a customer once, then
 runs all reporting scripts sequentially with --skip-login so the az session
@@ -22,19 +22,20 @@ Scripts run (in order):
     6. get_appserviceplans.py
     7. get_eventhubnamespaces.py
 
+Extractor scripts are expected in the sibling `extractor/` folder.
 Output is written to <output-dir>/<CUSTOMER>_<YYYYMMDD_HHMM>/ so each run
 gets its own timestamped sub-folder.
 
 Usage
 -----
-    python ManagedServiceWrapper.py -c CUST
-    python ManagedServiceWrapper.py -c CUST -i ../customers/CUST.json --output-dir ../reports
-    python ManagedServiceWrapper.py -c CUST --from 2026-02-01 --to 2026-04-20
-    python ManagedServiceWrapper.py -c CUST --lookback PT6H
-    python ManagedServiceWrapper.py -c CUST --skip get_subscriptions.py get_daily_costs.py get_reserved_instances.py get_virtualmachines.py get_containerApps.py get_appserviceplans.py get_eventhubnamespaces.py
-    python ManagedServiceWrapper.py -c CUST --skip-login
-    python ManagedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-client-secret <secret>
-    python ManagedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-certificate /path/to/cert.pem
+    python managedServiceWrapper.py -c CUST
+    python managedServiceWrapper.py -c CUST -i ../customers/CUST.json --output-dir ../reports
+    python managedServiceWrapper.py -c CUST --from 2026-02-01 --to 2026-04-20
+    python managedServiceWrapper.py -c CUST --lookback PT6H
+    python managedServiceWrapper.py -c CUST --skip get_subscriptions get_daily_costs get_reserved_instances get_virtualmachines get_containerApps get_appserviceplans get_eventhubnamespaces
+    python managedServiceWrapper.py -c CUST --skip-login
+    python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-client-secret <secret>
+    python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-certificate /path/to/cert.pem
 """
 
 import argparse
@@ -53,8 +54,9 @@ from pathlib import Path
 # On Windows the Azure CLI wrapper is az.cmd, not az
 AZ_CMD = "az.cmd" if sys.platform == "win32" else "az"
 
-# All scripts live next to this wrapper
+# This file lives in helperscripts/; extractor scripts are one level up in extractor/
 SCRIPT_DIR = Path(__file__).parent
+EXTRACTOR_DIR = SCRIPT_DIR.parent / "extractor"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 RED = "\033[31m"
 YELLOW = "\033[33m"
@@ -345,6 +347,101 @@ def _smoke_test_script(script_path: Path) -> tuple[bool, str]:
     return result.returncode == 0, combined_output
 
 
+def _has_sas_in_connection_string(connection_string: str) -> bool:
+    parts: dict[str, str] = {}
+    for token in connection_string.split(";"):
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        parts[key.strip().lower()] = value.strip()
+    return bool(parts.get("sharedaccesssignature", ""))
+
+
+def upload_directory_to_blob_storage(
+    source_dir: Path,
+    connection_string: str,
+    container_name: str,
+    blob_prefix: str,
+) -> int:
+    """Upload all files from *source_dir* to Azure Blob Storage and return file count."""
+    try:
+        from azure.core.exceptions import ResourceExistsError  # type: ignore[import-not-found]
+        from azure.storage.blob import BlobServiceClient  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError(
+            "Missing Azure Blob SDK. Install with: "
+            f"{sys.executable} -m pip install azure-storage-blob"
+        ) from exc
+
+    if not _has_sas_in_connection_string(connection_string):
+        raise ValueError(
+            "The provided storage connection string does not include SharedAccessSignature."
+        )
+
+    blob_service = BlobServiceClient.from_connection_string(connection_string)
+    container_client = blob_service.get_container_client(container_name)
+
+    try:
+        container_client.create_container()
+    except ResourceExistsError:
+        pass
+
+    prefix = blob_prefix.strip("/")
+    uploaded = 0
+
+    for file_path in source_dir.rglob("*"):
+        if not file_path.is_file():
+            continue
+
+        rel_path = file_path.relative_to(source_dir).as_posix()
+        blob_name = f"{prefix}/{rel_path}" if prefix else rel_path
+
+        with open(file_path, "rb") as data:
+            container_client.upload_blob(name=blob_name, data=data, overwrite=True)
+        uploaded += 1
+
+    return uploaded
+
+
+def _get_manifest_builder():
+    """Dynamically import build_manifest / load_existing_manifest from helperscripts."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "createManifest", SCRIPT_DIR / "createManifest.py"
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot locate helperscripts/createManifest.py at {helpers_dir}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod.build_manifest, mod.load_existing_manifest
+
+
+def _download_manifest_from_blob(
+    connection_string: str,
+    container_name: str,
+    blob_prefix: str,
+) -> dict:
+    """Try to download and parse an existing manifest.json from blob storage.
+
+    Returns the parsed dict on success, or an empty dict when the blob does not
+    exist or any error occurs (non-fatal — a fresh manifest is generated instead).
+    """
+    try:
+        from azure.storage.blob import BlobServiceClient  # type: ignore[import-not-found]
+    except ImportError:
+        return {}
+
+    try:
+        client = BlobServiceClient.from_connection_string(connection_string)
+        prefix = blob_prefix.strip("/")
+        blob_name = f"{prefix}/manifest.json" if prefix else "manifest.json"
+        blob_client = client.get_blob_client(container=container_name, blob=blob_name)
+        raw = blob_client.download_blob().readall().decode("utf-8")
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
 def run_dependency_preflight(selected_scripts: list[tuple[str, str, list[str]]]) -> tuple[bool, dict]:
     report: dict = {
         "python_executable": sys.executable,
@@ -357,7 +454,7 @@ def run_dependency_preflight(selected_scripts: list[tuple[str, str, list[str]]])
     all_ok = bool(az_path)
 
     for stem, label, _extra in selected_scripts:
-        script_path = SCRIPT_DIR / f"{stem}.py"
+        script_path = EXTRACTOR_DIR / f"{stem}.py"
         script_report = {
             "stem": stem,
             "label": label,
@@ -469,7 +566,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run all managed-service reporting scripts for a customer.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     add_help=False,
-    usage="""%(prog)s\n  -c CUSTOMER\n  [-i INPUT]\n  [--output-dir OUTPUT_DIR]\n  [--output-format {csv,json,both}]\n  [--skip-login]\n  [--sp-client-id APP_ID]\n  [--sp-client-secret SECRET]\n  [--sp-certificate CERT_PATH]\n  [--from DATE_FROM]\n  [--to DATE_TO]\n  [--lookback LOOKBACK]\n  [--no-utilisation]\n  [--skip SCRIPT [SCRIPT ...]]\n  [--only SCRIPT [SCRIPT ...]]""",
+    usage="""%(prog)s\n  -c CUSTOMER\n  [-i INPUT]\n  [--output-dir OUTPUT_DIR]\n  [--output-format {csv,json,both}]\n  [--storage-connection-string CONNECTION_STRING]\n  [--storage-container CONTAINER]\n  [--storage-prefix PREFIX]\n  [--skip-login]\n  [--sp-client-id APP_ID]\n  [--sp-client-secret SECRET]\n  [--sp-certificate CERT_PATH]\n  [--from DATE_FROM]\n  [--to DATE_TO]\n  [--lookback LOOKBACK]\n  [--no-utilisation]\n  [--skip SCRIPT [SCRIPT ...]]\n  [--only SCRIPT [SCRIPT ...]]""",
         epilog="""
 examples:
   %(prog)s -c CUST
@@ -510,6 +607,23 @@ examples:
         choices=("csv", "json", "both"),
         default="both",
         help="File output format for child extractors: csv, json, or both (default: both).",
+    )
+    parser.add_argument(
+        "--storage-connection-string",
+        default=None,
+        help="Optional Azure Storage connection string containing a SAS token. "
+             "When provided, generated files are also uploaded to blob storage.",
+    )
+    parser.add_argument(
+        "--storage-container",
+        default="managed-service-reports",
+        help="Blob container used with --storage-connection-string "
+             "(default: managed-service-reports).",
+    )
+    parser.add_argument(
+        "--storage-prefix",
+        default=None,
+        help="Optional blob path prefix. Default: <CUSTOMER>_<timestamp>.",
     )
     parser.add_argument(
         "--skip-login",
@@ -722,7 +836,7 @@ def main() -> None:
             results[stem] = "skipped"
             continue
 
-        script_path = SCRIPT_DIR / f"{stem}.py"
+        script_path = EXTRACTOR_DIR / f"{stem}.py"
         if not script_path.exists():
             _print_warning(f"\n  ⚠  Script not found: {script_path} — skipping")
             results[stem] = "not found"
@@ -756,6 +870,64 @@ def main() -> None:
     _log_file.close()
     sys.stdout = sys.__stdout__
     sys.stderr = sys.__stderr__
+
+    # ── Resolve blob prefix once (shared by manifest download and upload) ─────
+    blob_prefix = args.storage_prefix or out_dir.name if args.storage_connection_string else None
+
+    # ── Manifest generation ───────────────────────────────────────────────────
+    _banner("Generating Manifest")
+    existing_manifest: dict = {}
+
+    if args.storage_connection_string and blob_prefix is not None:
+        print(f"  Checking for existing manifest in blob storage…")
+        existing_manifest = _download_manifest_from_blob(
+            args.storage_connection_string,
+            args.storage_container,
+            blob_prefix,
+        )
+        if existing_manifest:
+            _print_success(
+                f"  ✓  Downloaded existing manifest "
+                f"(customer: {existing_manifest.get('customer', '?')}, "
+                f"dashboards: {len(existing_manifest.get('dashboards', []))})"
+            )
+        else:
+            print("  ℹ  No existing manifest in storage — creating fresh manifest")
+
+    try:
+        build_manifest, _ = _get_manifest_builder()
+        manifest = build_manifest(out_dir, existing_manifest)
+        manifest_path = out_dir / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        _print_success(
+            f"  ✓  manifest.json written "
+            f"({len(manifest.get('dashboards', []))} dashboard(s), "
+            f"{len(manifest.get('other_files', []))} other file(s))"
+        )
+    except Exception as exc:
+        _print_warning(f"  ⚠  Manifest generation failed; continuing without it: {exc}")
+
+    # ── Blob upload (includes manifest.json) ──────────────────────────────────
+    if args.storage_connection_string and blob_prefix is not None:
+        _banner("Blob Upload")
+        print(f"  Container  : {args.storage_container}")
+        print(f"  Prefix     : {blob_prefix}")
+        try:
+            uploaded = upload_directory_to_blob_storage(
+                source_dir=out_dir,
+                connection_string=args.storage_connection_string,
+                container_name=args.storage_container,
+                blob_prefix=blob_prefix,
+            )
+            if uploaded:
+                _print_success(f"  ✓  Uploaded {uploaded} file(s) to Azure Blob Storage")
+            else:
+                _print_warning("  ⚠  No files were found to upload")
+        except Exception as exc:
+            _print_warning(f"  ⚠  Blob upload failed; local files are preserved: {exc}")
 
     if any(r == "failed" for r in results.values()):
         sys.exit(1)

@@ -3,8 +3,10 @@
 *.local
 
 # Sensitive customer files
+commands.ps1
 customers/
 extractor/__pycache__/
+helperscripts/__pycache__/
 reports/
 templates/YYYY-MM-DD_CUSTOMER_CostManagement.docx
 

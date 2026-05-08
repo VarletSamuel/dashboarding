@@ -17,8 +17,8 @@ A comprehensive data extraction and visualization suite for Azure resource monit
 
 ### Basic Usage
 ```bash
-cd extractor
-python ManagedServiceWrapper.py -c CUST
+cd helperscripts
+python managedServiceWrapper.py -c CUST
 ```
 
 This runs all extraction scripts for the CUST customer and generates reports in `../reports/CUST_<timestamp>/`.
@@ -88,7 +88,7 @@ Each customer requires a JSON configuration file in `customers/<CUSTOMER>.json`:
 
 ### Using the Wrapper (Recommended)
 
-The `ManagedServiceWrapper.py` orchestrates all extractor scripts with unified parameter handling and logging.
+The `managedServiceWrapper.py` orchestrates all extractor scripts with unified parameter handling and logging.
 
 #### Wrapper Parameters
 
@@ -107,6 +107,20 @@ COMMON OPTIONS:
 
   --output-format {csv|json|both}
         File format for extractors. Default: both
+
+  OPTIONAL EXPORT TO AZURE BLOB STORAGE:
+    --storage-connection-string <CONNECTION_STRING>
+      Optional Azure Storage connection string that contains
+      SharedAccessSignature. When provided, the wrapper uploads all
+      generated files from the run folder to blob storage.
+
+    --storage-container <CONTAINER>
+      Blob container name used for upload.
+      Default: managed-service-reports
+
+    --storage-prefix <PREFIX>
+      Optional blob prefix/path for uploaded files.
+      Default: <CUSTOMER>_<YYYYMMDD_HHMM>
 
   --skip-login
         Skip 'az login --tenant'. Use if already authenticated to all tenants.
@@ -151,47 +165,61 @@ SELECTIVE EXECUTION:
 
 ```bash
 # Basic run (all scripts, interactive login)
-python ManagedServiceWrapper.py -c CUST
+python managedServiceWrapper.py -c CUST
 
 # Specific customer JSON and output directory
-python ManagedServiceWrapper.py -c CUST -i /path/to/custom.json --output-dir ./my_reports
+python managedServiceWrapper.py -c CUST -i ../customers/CUST.json --output-dir ./my_reports
 
 # Custom date range (cost analysis)
-python ManagedServiceWrapper.py -c CUST --from 2026-01-01 --to 2026-05-07
+python managedServiceWrapper.py -c CUST --from 2026-01-01 --to 2026-05-07
 
 # Metrics lookback (last 6 hours)
-python ManagedServiceWrapper.py -c CUST --lookback PT6H
+python managedServiceWrapper.py -c CUST --lookback PT6H
 
 # Service Principal (non-interactive CI/CD)
-python ManagedServiceWrapper.py -c CUST \
+python managedServiceWrapper.py -c CUST \
   --sp-client-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
   --sp-client-secret "****************************"
 
 # Service Principal with certificate
-python ManagedServiceWrapper.py -c CUST \
+python managedServiceWrapper.py -c CUST \
   --sp-client-id   --sp-client-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
   --sp-certificate /path/to/cert.pem
 
 # Skip RI utilisation (faster for cost-only runs)
-python ManagedServiceWrapper.py -c CUST --no-utilisation
+python managedServiceWrapper.py -c CUST --no-utilisation
 
 # Run only cost and VM data
-python ManagedServiceWrapper.py -c CUST --only get_daily_costs get_virtualmachines
+python managedServiceWrapper.py -c CUST --only get_daily_costs get_virtualmachines
 
 # Run all except costs and reserved instances
-python ManagedServiceWrapper.py -c CUST --skip get_daily_costs get_reserved_instances
+python managedServiceWrapper.py -c CUST --skip get_daily_costs get_reserved_instances
 
 # Already logged in to all tenants, so skip login
-python ManagedServiceWrapper.py -c CUST --skip-login
+python managedServiceWrapper.py -c CUST --skip-login
 
 # CSV format only (no JSON)
-python ManagedServiceWrapper.py -c CUST --output-format csv
+python managedServiceWrapper.py -c CUST --output-format csv
+
+# Optional: upload generated run output to Azure Blob Storage
+python managedServiceWrapper.py -c CUST \
+  --storage-connection-string "DefaultEndpointsProtocol=https;AccountName=...;SharedAccessSignature=..." \
+  --storage-container managed-service-reports \
+  --storage-prefix CUST/latest
 
 # Combined: costs for last month + skip RI utilisation
-python ManagedServiceWrapper.py -c CUST \
+python managedServiceWrapper.py -c CUST \
   --from 2026-04-01 --to 2026-04-30 \
   --no-utilisation
 ```
+
+Run from the `helperscripts/` folder:
+```bash
+cd helperscripts
+python managedServiceWrapper.py -c CUST
+```
+
+When --storage-connection-string is not provided, behavior is unchanged and files remain local only.
 
 #### Output Structure
 
@@ -479,6 +507,27 @@ const STORAGE_CONFIG = {
 };
 ```
 
+### Wrapper Export to Storage (Optional)
+
+The extractor wrapper can now export each generated run folder directly to Azure Blob Storage after local file generation.
+
+How it works:
+- Local output is always generated first in reports/<CUSTOMER>_<timestamp>/
+- Upload runs only when --storage-connection-string is provided
+- Connection string must include SharedAccessSignature
+- On upload failure, local files are kept and a warning is shown
+
+Example:
+
+```bash
+cd helperscripts
+python managedServiceWrapper.py -c CUST \
+  --output-format both \
+  --storage-connection-string "DefaultEndpointsProtocol=https;AccountName=...;SharedAccessSignature=..." \
+  --storage-container managed-service-reports \
+  --storage-prefix CUST/2026-05
+```
+
 ---
 
 ## Future Enhancements
@@ -593,7 +642,7 @@ const STORAGE_CONFIG = {
 Enable verbose logging:
 ```bash
 # Wrapper debug
-python ManagedServiceWrapper.py -c CUST --debug
+python managedServiceWrapper.py -c CUST --debug
 
 # Individual script debug
 python get_daily_costs.py -i ../customers/CUST.json --verbose
