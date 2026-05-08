@@ -359,6 +359,12 @@ Interactive HTML dashboards for visualizing extracted data. Located in `dashboar
 | **healthChecks.html** | Service health status and availability monitoring | Azure Service Health API |
 | **qualityChecks.html** | Code quality and security compliance metrics | Customer-specific data |
 
+### Live Demo
+
+🔗 **[Test Dashboards Live](https://varletbesawe01.z6.web.core.windows.net)**
+
+Try all dashboards with pre-loaded demo data at the live test environment hosted on Azure Static Web App. Perfect for exploring functionality and testing new features before deploying to production.
+
 ### Opening a Dashboard
 
 1. Copy the desired CSV file from `reports/<CUSTOMER>_<timestamp>/` to your local machine
