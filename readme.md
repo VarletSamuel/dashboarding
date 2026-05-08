@@ -66,7 +66,7 @@ Each customer requires a JSON configuration file in `customers/<CUSTOMER>.json`:
 
 ```json
 {
-  "name": "Synergrid",
+  "name": "CUSTOMER",
   "authentication": {
     "client_id": "optional-app-id-for-service-principal"
   },
