@@ -532,7 +532,6 @@ const FILTER_DEFS = [
 // ══════════════════════════════════════════════════════════════
 // UTILITY
 // ══════════════════════════════════════════════════════════════
-function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 function getCSSVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 function destroyCharts() { CHART_INSTANCES.forEach(c => c.destroy()); CHART_INSTANCES = []; }
 function makeChart(id, cfg) {

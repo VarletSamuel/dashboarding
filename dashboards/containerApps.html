@@ -439,8 +439,6 @@ function utilizationClass(pct) {
   return 'high';
 }
 function fmtPct(v) { return v != null ? v.toFixed(1) + '%' : '—'; }
-function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
-
 function buildAzurePortalResourceLink(env, app) {
   const subscriptionId = (env?.subscription_id || '').trim();
   const resourceGroup = (env?.resource_group || '').trim();

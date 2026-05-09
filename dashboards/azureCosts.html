@@ -312,8 +312,8 @@ function getFilteredRecords(){
     if(ACTIVE_FILTERS.subscription.size&&!ACTIVE_FILTERS.subscription.has(subKey))return false;
     if(ACTIVE_FILTERS.resource_type.size&&!ACTIVE_FILTERS.resource_type.has(r.res_type||'(none)'))return false;
     if(ACTIVE_FILTERS.resource_group.size&&!ACTIVE_FILTERS.resource_group.has(r.rg))return false;
-    if(DATE_FILTER.from&&r.date<DATE_FILTER.from)return false;
-    if(DATE_FILTER.to&&r.date>DATE_FILTER.to)return false;
+    if(ACTIVE_FILTERS.date_from&&r.date<ACTIVE_FILTERS.date_from)return false;
+    if(ACTIVE_FILTERS.date_to&&r.date>ACTIVE_FILTERS.date_to)return false;
     return true;
   });
 }
@@ -579,7 +579,7 @@ fileInput.addEventListener('change', () => {
 document.getElementById('reloadBtn').addEventListener('click',()=>{
   document.getElementById('dashboardScreen').style.display='none';
   document.getElementById('uploadScreen').style.display='flex';
-  destroyCharts();ALL_RECORDS=[];DATA=null;FILTER_OPTIONS={};ACTIVE_FILTERS={};DATE_FILTER={from:'',to:''};
+  destroyCharts();ALL_RECORDS=[];DATA=null;FILTER_OPTIONS={};ACTIVE_FILTERS={};
   fileInput.value='';errorMsg.textContent='';
 });
 

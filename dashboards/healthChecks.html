@@ -186,10 +186,6 @@ let _chartAdv = null, _chartMon = null, _chartPol = null;
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const pct = (n, d) => d ? Math.round(n / d * 100) : 0;
 
-function esc(s) {
-  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
 function impactBadge(v) {
   if (!v) return '';
   const cls = v === 'High' ? 'badge-impact-high' : v === 'Medium' ? 'badge-impact-medium' : 'badge-impact-low';

@@ -1,25 +1,6 @@
 /* ── Virtual Machines Dashboard: local overrides only ── */
 #dashboardScreen { display: none; }
 .filter-btn-static { cursor: default; }
-.date-range-inline { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
-.date-input {
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 4px 6px;
-  font: inherit;
-  color-scheme: inherit;
-}
-.date-input:focus {
-  outline: 1px solid var(--accent);
-  outline-offset: 1px;
-  border-color: var(--accent);
-}
-.date-input::-webkit-calendar-picker-indicator { opacity: 0.9; cursor: pointer; }
-[data-theme="dark"] .date-input::-webkit-calendar-picker-indicator { filter: invert(1); }
-[data-theme="light"] .date-input::-webkit-calendar-picker-indicator { filter: none; }
-.date-sep { opacity: 0.8; font-size: 12px; }
 
 /* Signal badges */
 .signal {

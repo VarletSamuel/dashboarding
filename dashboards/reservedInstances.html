@@ -238,12 +238,6 @@ function aggregate(rows) {
 // ══════════════════════════════════════════════════════════════════════════
 // UTILITY
 // ══════════════════════════════════════════════════════════════════════════
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s || '';
-  return d.innerHTML;
-}
-
 function fmtTerm(term) {
   if (term === 'P3Y') return { label: '3 year', cls: 'term-3y' };
   if (term === 'P1Y') return { label: '1 year', cls: 'term-1y' };

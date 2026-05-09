@@ -110,7 +110,6 @@ const FILTER_DEFS = [
   { key: 'reserved_capacity_candidate', label: 'RI Candidate', icon: '🏷️' },
 ];
 
-function esc(v){ const d=document.createElement('div'); d.textContent=v ?? ''; return d.innerHTML; }
 function toNum(v){ if(v==null || v==='') return null; const n = Number(String(v).replace(',', '.')); return Number.isFinite(n) ? n : null; }
 function fmtRu(v){ return v == null ? 'N/A' : Number(v).toLocaleString('en-US'); }
 

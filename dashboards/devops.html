@@ -181,10 +181,6 @@ let _chartHealth = null, _chartUsage = null, _chartBranches = null, _chartLicens
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const pct = (n, d) => d ? Math.round(n / d * 100) : 0;
 
-function esc(s) {
-  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
 function tooltipCfg() {
   const surf2   = css('--surface-2') || '#1e2130';
   const borderC = css('--border')    || '#2a2d3a';

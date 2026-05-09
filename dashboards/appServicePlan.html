@@ -124,7 +124,6 @@ const FILTER_DEFS = [
   { key: 'primary_workload_kind', label: 'Workload', icon: '⚙️' },
 ];
 
-function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 function pf(v) { if (v === '' || v == null) return null; const n = parseFloat(v); return Number.isFinite(n) ? n : null; }
 function pi(v) { if (v === '' || v == null) return null; const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; }
 function fmtNum(v, d = 1) { return v == null ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }); }
