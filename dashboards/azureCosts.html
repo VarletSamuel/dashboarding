@@ -95,7 +95,7 @@
 
   <!-- ── Section: Daily Cost Trend ── -->
   <div class="env-section" id="sect-daily">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>Daily Cost Trend</h2>
     </div>
@@ -108,7 +108,7 @@
 
   <!-- ── Section: Cost Breakdown by Resource Type ── -->
   <div class="env-section" id="sect-breakdown">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>Cost Breakdown by Resource Type</h2>
     </div>
@@ -124,7 +124,7 @@
 
   <!-- ── Section: Cost by Subscription ── -->
   <div class="env-section" id="sect-subs">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>Cost by Subscription</h2>
     </div>
@@ -140,7 +140,7 @@
 
   <!-- ── Section: Top 30 Most Expensive Resources ── -->
   <div class="env-section" id="sect-resources">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>Top 30 Most Expensive Resources</h2>
     </div>
@@ -153,7 +153,7 @@
 
   <!-- ── Section: Month-over-Month Comparison ── -->
   <div class="env-section" id="sect-mom">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>Month-over-Month Cost Comparison</h2>
     </div>
@@ -166,7 +166,7 @@
 
   <!-- ── Section: Cost Forecast (new) ── -->
   <div class="env-section" id="sect-forecast">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>Cost Forecast</h2>
       <span class="env-summary" id="forecastSummary">Linear trend · 90-day projection · 80% confidence interval</span>
@@ -979,9 +979,6 @@ function renderMomTable(){
 // ===========================================================================
 // COLLAPSIBLE SECTIONS
 // ===========================================================================
-function toggleSection(headerEl) {
-  headerEl.closest('.env-section').classList.toggle('collapsed');
-}
 
 // ===========================================================================
 // FORECASTING  (linear regression · 90-day horizon · configurable PI)
@@ -1424,4 +1421,5 @@ document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
 <script src="../bin/table-sort.js"></script>
 </body>
 </html>
+
 

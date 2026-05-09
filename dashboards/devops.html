@@ -73,7 +73,7 @@
 
   <!-- ── License Inventory ── -->
   <div class="env-section" id="sect-licenses">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>🪪 License Inventory</h2>
       <span class="env-summary" id="licensesSummary"></span>
@@ -96,7 +96,7 @@
 
   <!-- ── Pipeline Health ── -->
   <div class="env-section" id="sect-health">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>🚦 Pipeline Health</h2>
       <span class="env-summary" id="healthSummary"></span>
@@ -120,7 +120,7 @@
 
   <!-- ── Pipeline Usage ── -->
   <div class="env-section" id="sect-usage">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>📊 Pipeline Usage</h2>
       <span class="env-summary" id="usageSummary"></span>
@@ -144,7 +144,7 @@
 
   <!-- ── Branch Governance ── -->
   <div class="env-section" id="sect-branches">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>🌿 Branch Governance</h2>
       <span class="env-summary" id="branchesSummary"></span>
@@ -902,9 +902,6 @@ function renderLicenses(licenses) {
 // ════════════════════════════════════════════════════════════
 // COLLAPSIBLE SECTIONS
 // ════════════════════════════════════════════════════════════
-function toggleSection(headerEl) {
-  headerEl.closest('.env-section').classList.toggle('collapsed');
-}
 
 // ════════════════════════════════════════════════════════════
 // THEME TOGGLE
@@ -1136,5 +1133,6 @@ document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
 <script src="../bin/table-sort.js"></script>
 </body>
 </html>
+
 
 

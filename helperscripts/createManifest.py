@@ -12,6 +12,7 @@ Behavior:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 from datetime import datetime, timezone
@@ -242,10 +243,32 @@ def merge_other_files(
 	return sorted(merged, key=lambda x: (x.get("type", ""), x.get("filename", "")))
 
 
+def has_csv_data_rows(file_path: Path) -> bool:
+	"""Return True only if the CSV has at least one non-empty data row beyond the header."""
+	try:
+		with file_path.open(newline="", encoding="utf-8-sig") as fh:
+			reader = csv.reader(fh)
+			# Skip header row
+			try:
+				next(reader)
+			except StopIteration:
+				return False  # completely empty
+			# Check for at least one data row with content
+			for row in reader:
+				if any(cell.strip() for cell in row):
+					return True
+		return False
+	except OSError:
+		return False
+
+
 def build_manifest(report_dir: Path, existing_manifest: Dict[str, Any]) -> Dict[str, Any]:
 	discovered = []
 	for file_path in report_dir.iterdir():
 		if file_path.name == "manifest.json" or not file_path.is_file():
+			continue
+		if file_path.suffix.lower() == ".csv" and not has_csv_data_rows(file_path):
+			print(f"  ⚠  Skipping empty/header-only CSV: {file_path.name}")
 			continue
 		parsed = parse_report_file(file_path)
 		if parsed:

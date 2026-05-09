@@ -88,6 +88,7 @@ class AzureStorageClient {
     try {
       const response = await fetch(url.toString(), {
         method: 'GET',
+        cache: 'no-store',
         headers: this.getAuthHeaders(),
       });
 
@@ -120,6 +121,7 @@ class AzureStorageClient {
     try {
       const response = await fetch(url.toString(), {
         method: 'GET',
+        cache: 'no-store',
         headers: this.getAuthHeaders(),
       });
 
@@ -155,6 +157,7 @@ class AzureStorageClient {
     try {
       const response = await fetch(url.toString(), {
         method: 'GET',
+        cache: 'no-store',
         headers: this.getAuthHeaders(),
       });
 

@@ -73,7 +73,7 @@
 
   <!-- ── Advisor ── -->
   <div class="env-section" id="sect-adv">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>💡 Azure Advisor Recommendations</h2>
       <span class="env-summary" id="advSummary"></span>
@@ -97,7 +97,7 @@
 
   <!-- ── Monitor Alerts ── -->
   <div class="env-section" id="sect-mon">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>🔔 Monitor Alert Rules</h2>
       <span class="env-summary" id="monSummary"></span>
@@ -121,7 +121,7 @@
 
   <!-- ── Policy ── -->
   <div class="env-section" id="sect-pol">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>📋 Policy Non-Compliance</h2>
       <span class="env-summary" id="polSummary"></span>
@@ -884,9 +884,6 @@ function renderDevOps(dev) {
 // ════════════════════════════════════════════════════════════
 // COLLAPSIBLE SECTIONS
 // ════════════════════════════════════════════════════════════
-function toggleSection(headerEl) {
-  headerEl.closest('.env-section').classList.toggle('collapsed');
-}
 
 // ════════════════════════════════════════════════════════════
 // THEME TOGGLE
@@ -1169,5 +1166,6 @@ document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
 <script src="../bin/table-sort.js"></script>
 </body>
 </html>
+
 
 

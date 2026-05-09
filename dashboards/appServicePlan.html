@@ -56,7 +56,7 @@
   <div class="kpi-row" id="kpis"></div>
 
   <div class="env-section" id="sect-signals">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>Cost Signals</h2>
       <span class="env-summary" id="signalSummary"></span>
@@ -73,7 +73,7 @@
   </div>
 
   <div class="env-section" id="sect-detail">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>Plans Detail</h2>
       <span class="env-summary" id="detailSummary"></span>
@@ -90,7 +90,7 @@
   </div>
 
   <div class="env-section" id="sect-cards">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>Plan Overview Cards</h2>
       <span class="env-summary" id="cardsSummary"></span>
@@ -481,9 +481,6 @@ function renderPlanCards() {
   }).join('');
 }
 
-function toggleSection(headerEl) {
-  headerEl.closest('.env-section').classList.toggle('collapsed');
-}
 
 function updateUploadStatus() {
   const el = document.getElementById('upload-status');
@@ -839,5 +836,6 @@ function loadDemo() {
 <script src="../bin/table-sort.js"></script>
 </body>
 </html>
+
 
 

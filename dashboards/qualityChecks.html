@@ -73,7 +73,7 @@
 
   <!-- ── Subscription summary ── -->
   <div class="env-section" id="sect-summary">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>Compliance by Subscription</h2>
     </div>
@@ -92,7 +92,7 @@
 
   <!-- ── Key Vault ── -->
   <div class="env-section" id="sect-kv">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>🔑 Key Vault</h2>
       <span class="env-summary" id="kvSummary"></span>
@@ -116,7 +116,7 @@
 
   <!-- ── Storage Accounts ── -->
   <div class="env-section" id="sect-st">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>💾 Storage Accounts</h2>
       <span class="env-summary" id="stSummary"></span>
@@ -140,7 +140,7 @@
 
   <!-- ── App Service Plans ── -->
   <div class="env-section" id="sect-asp">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>🌐 App Service Plans</h2>
       <span class="env-summary" id="aspSummary"></span>
@@ -164,7 +164,7 @@
 
   <!-- ── SQL Servers ── -->
   <div class="env-section" id="sect-sqlsrv">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>🖥️ SQL Servers</h2>
       <span class="env-summary" id="sqlsrvSummary"></span>
@@ -188,7 +188,7 @@
 
   <!-- ── SQL Databases ── -->
   <div class="env-section" id="sect-sqldb">
-    <div class="env-header" onclick="toggleSection(this)">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
       <h2>🗄️ SQL Databases</h2>
       <span class="env-summary" id="sqldbSummary"></span>
@@ -869,9 +869,6 @@ function renderDetailTable(tableId, records, checks, type) {
 // ════════════════════════════════════════════════════════════
 // COLLAPSIBLE SECTIONS
 // ════════════════════════════════════════════════════════════
-function toggleSection(headerEl) {
-  headerEl.closest('.env-section').classList.toggle('collapsed');
-}
 
 // ════════════════════════════════════════════════════════════
 // THEME TOGGLE
@@ -1182,4 +1179,5 @@ document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
 <script src="../bin/table-sort.js"></script>
 </body>
 </html>
+
 
