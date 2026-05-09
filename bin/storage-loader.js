@@ -290,8 +290,12 @@ async function initStorageFileLoader(dashboardId, onStep) {
   const hash = window.location.hash;
   if (hash.startsWith('#conn=')) {
     connection = decodeURIComponent(hash.slice(6));
-    // Persist locally so reloads within this dashboard still work
-    localStorage.setItem(STORAGE_CONFIG_KEY, connection);
+    // Persist locally when provided; clear local copy when hash is explicitly empty.
+    if (connection) {
+      localStorage.setItem(STORAGE_CONFIG_KEY, connection);
+    } else {
+      localStorage.removeItem(STORAGE_CONFIG_KEY);
+    }
     // Remove hash from URL without triggering a reload
     history.replaceState(null, '', window.location.pathname + window.location.search);
     console.log(`✓ [storage-loader] Connection read from URL hash and saved to localStorage`);
@@ -363,6 +367,11 @@ async function initStorageFileLoader(dashboardId, onStep) {
 
     const loadedFiles = await loadFilesFromManifest(client, manifest, dashboard, step);
     console.log(`✅ [storage-loader] Loaded ${loadedFiles.length} files from storage`);
+
+    if (loadedFiles.length === 0) {
+      console.warn(`⚠️ [storage-loader] No valid files loaded from manifest; using upload fallback UI`);
+      return false;
+    }
     
     // Trigger dashboard render
     if (typeof onFilesLoaded === 'function') {
@@ -377,8 +386,21 @@ async function initStorageFileLoader(dashboardId, onStep) {
     console.error(`❌ [storage-loader] Error during auto-load:`, err);
     console.error(`   Message: ${err.message}`);
     console.error(`   Stack:`, err.stack);
+    if (err && err.message === 'No data rows found in CSV.') {
+      alert(err.message);
+    }
     return false;
   }
+}
+
+function hasCsvDataRows(content) {
+  if (typeof content !== 'string') return false;
+  const nonEmptyLines = content
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+  return nonEmptyLines.length > 1;
 }
 
 async function loadFilesFromManifest(client, manifest, dashboard, onStep) {
@@ -392,6 +414,10 @@ async function loadFilesFromManifest(client, manifest, dashboard, onStep) {
       step(`Downloading file ${i + 1} of ${dashboard.files.length}…`);
       console.log(`   ↓ Fetching ${fileInfo.type}: ${fileInfo.filename}`);
       const content = await client.downloadBlob(containerName, fileInfo.filename);
+      if (!hasCsvDataRows(content)) {
+        console.warn(`   ⚠️ Empty CSV in manifest: ${fileInfo.filename}`);
+        throw new Error('No data rows found in CSV.');
+      }
       console.log(`   ✓ Downloaded ${fileInfo.type} (${content.length} bytes)`);
       files.push({
         name: fileInfo.filename,

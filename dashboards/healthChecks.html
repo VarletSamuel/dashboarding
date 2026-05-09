@@ -38,13 +38,13 @@
     <div class="label">Drop one or more Health Check CSV files here</div>
     <div class="hint">hc_advisor · hc_monitor_alerts · hc_policy_noncompliant — or click to browse</div>
   </div>
-  <div id="fileStatusList"></div>
+  <div id="fileStatusList" style="display:none"></div>
   <input type="file" id="fileInputMain" accept=".csv" multiple
          title="Expected files: *_hc_advisor_*.csv, *_hc_monitor_alerts_*.csv, *_hc_policy_noncompliant_*.csv">
-  <div id="errorMsg"></div>
-  <div id="loadingMsg">⏳ Parsing…</div>
+  <div id="errorMsg" style="display:none"></div>
+  <div id="loadingMsg" style="display:none">⏳ Parsing…</div>
   <button id="buildDashBtn" class="btn" style="display:none;margin-top:12px">Build Dashboard →</button>
-  <div style="margin-top:14px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div style="margin-top:8px;color:var(--text-dim);font-size:13px;text-align:center">— or —</div>
   <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
     <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
     <button id="demoBtn" class="btn btn--ghost">Load Demo Data</button>
@@ -294,6 +294,7 @@ const buildBtn   = document.getElementById('buildDashBtn');
 
 function handleFiles(fileList) {
   errorMsg.textContent = '';
+  errorMsg.style.display = 'none';
   loadingMsg.style.display = 'block';
   const files = Array.from(fileList);
   let processed = 0;
@@ -315,8 +316,13 @@ function handleFiles(fileList) {
       }
       if (processed === files.length) {
         loadingMsg.style.display = 'none';
-        if (errors.length) errorMsg.textContent = '❌ ' + errors.join('  |  ');
+        if (errors.length) {
+          errorMsg.textContent = '❌ ' + errors.join('  |  ');
+          errorMsg.style.display = 'block';
+          showFileUploadUI();
+        }
         updateFileStatus();
+        hideStorageSpinner();
         if (ADV_ALL.length || MON_ALL.length || POL_ALL.length) buildBtn.style.display = '';
       }
     };
@@ -326,6 +332,9 @@ function handleFiles(fileList) {
       if (processed === files.length) {
         loadingMsg.style.display = 'none';
         errorMsg.textContent = '❌ ' + errors.join('  |  ');
+        errorMsg.style.display = 'block';
+        hideStorageSpinner();
+        showFileUploadUI();
       }
     };
     reader.readAsText(file, 'utf-8');
@@ -340,6 +349,7 @@ function updateFileStatus() {
   if (MON_ALL.length) items.push(`🔔 Monitor — ${MON_ALL.length} alert rules`);
   if (POL_ALL.length) items.push(`📋 Policy — ${POL_ALL.length} violations`);
   list.innerHTML = items.map(i => `<div class="file-status-item">${i}</div>`).join('');
+  list.style.display = items.length ? 'block' : 'none';
   if (items.length) zone.classList.add('loaded'); else zone.classList.remove('loaded');
 }
 
@@ -350,9 +360,13 @@ document.getElementById('reloadBtn').addEventListener('click', () => {
   document.getElementById('uploadScreen').style.display = 'flex';
   ADV_ALL = []; MON_ALL = []; POL_ALL = []; ACTIVE_SUBS = new Set();
   document.getElementById('dropZoneMain').classList.remove('loaded');
-  document.getElementById('fileStatusList').innerHTML = '';
+  const fileStatusList = document.getElementById('fileStatusList');
+  fileStatusList.innerHTML = '';
+  fileStatusList.style.display = 'none';
   buildBtn.style.display = 'none';
   errorMsg.textContent = '';
+  errorMsg.style.display = 'none';
+  loadingMsg.style.display = 'none';
   [_chartAdv, _chartMon, _chartPol].forEach(c => { if (c) c.destroy(); });
   _chartAdv = _chartMon = _chartPol = null;
 });
@@ -361,6 +375,7 @@ document.getElementById('reloadBtn').addEventListener('click', () => {
 // SHOW DASHBOARD
 // ════════════════════════════════════════════════════════════
 function showDashboard(label) {
+  hideStorageSpinner();
   document.getElementById('uploadScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'block';
   document.getElementById('dashTitle').textContent =
@@ -1127,8 +1142,6 @@ window.onFilesLoaded = function(loadedFiles) {
     const csvFile = new File([file.content], file.name, { type: 'text/csv' });
     handleFiles([csvFile]);
   }
-  
-  hideFileUploadUI();
 };
 
 async function autoLoadFromStorage() {

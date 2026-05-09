@@ -33,7 +33,7 @@
   </div>
   <input type="file" id="file-input" accept=".csv"
          title="Expected file: *_cosmos_ru_*.csv (exported by the Cosmos RU extractor)">
-  <div style="margin-top:8px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div style="margin-top:8px;color:var(--text-dim);font-size:13px;text-align:center">— or —</div>
   <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
     <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
     <button class="btn btn--ghost" onclick="loadDemo()">Load Demo Data</button>
@@ -309,6 +309,7 @@ function renderAll(){
 }
 
 function showDashboard(filename){
+  hideStorageSpinner();
   document.getElementById('uploadScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'block';
 
@@ -333,11 +334,18 @@ function handleFile(file){
   reader.onload = e => {
     try{
       const rows = parseCSV(e.target.result || '');
-      if(!rows.length){ alert('No data rows found in CSV.'); return; }
+      if(!rows.length){
+        alert('No data rows found in CSV.');
+        hideStorageSpinner();
+        showFileUploadUI();
+        return;
+      }
       ALL_ROWS = rows;
       showDashboard(file.name || '');
     } catch(err){
       alert('Error parsing CSV: ' + err.message);
+      hideStorageSpinner();
+      showFileUploadUI();
     }
   };
   reader.readAsText(file);
@@ -451,7 +459,6 @@ window.onFilesLoaded = function(loadedFiles) {
     handleFile(summaryFile);
   }
   
-  hideFileUploadUI();
 };
 
 async function autoLoadFromStorage() {

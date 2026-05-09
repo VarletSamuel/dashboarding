@@ -34,8 +34,8 @@
   </div>
   <input type="file" id="file-input" accept=".csv" multiple style="display:none"
          title="Expected files: *_container_apps_summary_*.csv and/or *_container_apps_timeseries_*.csv">
-  <div id="upload-status" style="min-height:24px;margin:8px 0 2px;font-size:12px;color:var(--text-dim);text-align:center"></div>
-  <div style="margin-top:4px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div id="upload-status" style="display:none;font-size:12px;color:var(--text-dim);text-align:center"></div>
+  <div style="margin-top:8px;color:var(--text-dim);font-size:13px;text-align:center">— or —</div>
   <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
     <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
     <button class="btn btn--ghost" onclick="loadDemo()">Load Demo Data</button>
@@ -834,6 +834,7 @@ function renderDashboard() {
 // SHOW DASHBOARD
 // ══════════════════════════════════════════════════════════════
 function showDashboard() {
+  hideStorageSpinner();
   document.getElementById('uploadScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'block';
 
@@ -872,7 +873,12 @@ function updateUploadStatus() {
   const msgs = [];
   if (LOADED_FILES.summary)    msgs.push(`✅ Summary: ${LOADED_FILES.summary}`);
   if (LOADED_FILES.timeseries) msgs.push(`✅ Timeseries: ${LOADED_FILES.timeseries}`);
-  if (statusEl) statusEl.textContent = msgs.join('  ');
+  if (statusEl) {
+    const text = msgs.join('  ');
+    statusEl.textContent = text;
+    statusEl.style.display = text ? 'block' : 'none';
+    statusEl.style.margin = text ? '8px 0 2px' : '0';
+  }
   if (LOADED_FILES.summary && LOADED_FILES.timeseries) {
     zone.style.borderColor = 'var(--accent)';
     if (hintEl) hintEl.textContent = 'Both files loaded ✓';
@@ -906,7 +912,12 @@ function handleFile(file) {
   reader.onload = (e) => {
     try {
       const rows = parseCSV(e.target.result);
-      if (!rows.length) { alert('No data rows found in CSV.'); return; }
+      if (!rows.length) {
+        alert('No data rows found in CSV.');
+        hideStorageSpinner();
+        showFileUploadUI();
+        return;
+      }
       const name = file.name;
       if (isSummaryFile(name)) {
         SUMMARY_ROWS = rows;
@@ -934,6 +945,8 @@ function handleFile(file) {
       tryShowDashboard();
     } catch (err) {
       alert('Error parsing CSV: ' + err.message);
+      hideStorageSpinner();
+      showFileUploadUI();
     }
   };
   reader.readAsText(file);
@@ -973,7 +986,11 @@ document.getElementById('reloadBtn').addEventListener('click', () => {
   const hintEl = zone.querySelector('.hint');
   if (hintEl) hintEl.textContent = 'summary · timeseries · or both at once';
   const statusEl = document.getElementById('upload-status');
-  if (statusEl) statusEl.textContent = '';
+  if (statusEl) {
+    statusEl.textContent = '';
+    statusEl.style.display = 'none';
+    statusEl.style.margin = '0';
+  }
 });
 
 // ══════════════════════════════════════════════════════════════
@@ -1111,8 +1128,6 @@ window.onFilesLoaded = function(loadedFiles) {
     const timeseriesFile = new File([organized.timeseriesContent], 'timeseries.csv', { type: 'text/csv' });
     handleFile(timeseriesFile);
   }
-  
-  hideFileUploadUI();
 };
 
 async function autoLoadFromStorage() {

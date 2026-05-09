@@ -505,12 +505,12 @@ function renderGrid() {
 }
 
 function injectConnectionToLink(e, anchor) {
+  e.preventDefault();
   const conn = localStorage.getItem(STORAGE_CONFIG_KEY);
-  if (conn) {
-    e.preventDefault();
-    const base = anchor.href.split('#')[0];
-    window.location.href = base + '#conn=' + encodeURIComponent(conn);
-  }
+  const base = anchor.href.split('#')[0];
+  // Always pass conn hash so dashboards can clear their own local copy when empty.
+  const encodedConn = encodeURIComponent(conn || '');
+  window.location.href = base + '#conn=' + encodedConn;
 }
 
 renderGrid();
@@ -527,22 +527,25 @@ function initStorageConfig() {
   const saveBtn = document.getElementById('saveConnectionBtn');
   const clearBtn = document.getElementById('clearConnectionBtn');
   const input = document.getElementById('connectionStringInput');
-  const status = document.getElementById('connectionStatus');
+
+  function getSavedConnection() {
+    return localStorage.getItem(STORAGE_CONFIG_KEY) || '';
+  }
+
+  function syncConnectionUi() {
+    const hasSaved = !!getSavedConnection();
+    updateConnectionStatus(hasSaved);
+    clearBtn.style.display = hasSaved ? 'block' : 'none';
+  }
 
   // Load saved connection on init
-  const saved = localStorage.getItem(STORAGE_CONFIG_KEY);
-  if (saved) {
-    updateConnectionStatus(true);
-    clearBtn.style.display = 'block';
-  }
+  syncConnectionUi();
 
   // Open modal
   storageBtn.addEventListener('click', () => {
     modal.classList.add('open');
-    // Pre-fill input if connection exists (but show masked)
-    if (saved) {
-      input.value = saved;
-    }
+    // Always read current saved value (may have changed since page load)
+    input.value = getSavedConnection();
     input.focus();
   });
 
@@ -583,8 +586,7 @@ function initStorageConfig() {
 
     // Save to localStorage
     localStorage.setItem(STORAGE_CONFIG_KEY, connectionString);
-    updateConnectionStatus(true);
-    clearBtn.style.display = 'block';
+    syncConnectionUi();
     modal.classList.remove('open');
     input.value = '';
     
@@ -595,8 +597,7 @@ function initStorageConfig() {
   clearBtn.addEventListener('click', () => {
     if (confirm('Remove saved storage account connection?')) {
       localStorage.removeItem(STORAGE_CONFIG_KEY);
-      updateConnectionStatus(false);
-      clearBtn.style.display = 'none';
+      syncConnectionUi();
       input.value = '';
     }
   });

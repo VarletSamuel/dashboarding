@@ -437,6 +437,7 @@ function renderDashboard() {
 // SHOW DASHBOARD
 // ══════════════════════════════════════════════════════════════════════════
 function showDashboard(filename) {
+  hideStorageSpinner();
   document.getElementById('uploadScreen').style.display = 'none';
   document.getElementById('dashboardScreen').style.display = 'block';
 
@@ -462,15 +463,27 @@ function handleFile(file) {
   reader.onload = e => {
     try {
       const raw = parseCSV(e.target.result);
-      if (!raw.length) { alert('No data rows found in CSV.'); return; }
+      if (!raw.length) {
+        alert('No data rows found in CSV.');
+        hideStorageSpinner();
+        showFileUploadUI();
+        return;
+      }
       ALL_ROWS = raw.map(normaliseRow).filter(r => r.name || r.reservation_id);
-      if (!ALL_ROWS.length) { alert('Could not parse reservations from this file. Make sure it is the reservedInstances CSV exported from Azure Cost Management.'); return; }
+      if (!ALL_ROWS.length) {
+        alert('Could not parse reservations from this file. Make sure it is the reservedInstances CSV exported from Azure Cost Management.');
+        hideStorageSpinner();
+        showFileUploadUI();
+        return;
+      }
       FILTER_OPTIONS = extractFilterOptions(ALL_ROWS);
       ACTIVE_FILTERS = { type: new Set(), term: new Set(), region: new Set(), status: new Set() };
       AGGREGATED = aggregate(ALL_ROWS);
       showDashboard(file.name);
     } catch (err) {
       alert('Error parsing CSV: ' + err.message);
+      hideStorageSpinner();
+      showFileUploadUI();
     }
   };
   reader.readAsText(file);
@@ -608,7 +621,6 @@ window.onFilesLoaded = function(loadedFiles) {
     handleFile(summaryFile);
   }
   
-  hideFileUploadUI();
 };
 
 async function autoLoadFromStorage() {

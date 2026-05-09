@@ -47,9 +47,9 @@
   </div>
   <input type="file" id="fileInput" accept=".csv" multiple
          title="Expected files: *_daily_costs_by_resource_*.csv">
-  <div id="errorMsg"></div>
-  <div id="loadingMsg">⏳ Parsing and aggregating data...</div>
-  <div style="margin-top:8px;color:var(--text-dim);font-size:13px">— or —</div>
+  <div id="errorMsg" style="display:none"></div>
+  <div id="loadingMsg" style="display:none">⏳ Parsing and aggregating data...</div>
+  <div style="margin-top:8px;color:var(--text-dim);font-size:13px;text-align:center">— or —</div>
   <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
     <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
     <button id="demoBtn" class="btn btn--ghost">Load Demo Data</button>
@@ -581,13 +581,18 @@ document.getElementById('reloadBtn').addEventListener('click',()=>{
   document.getElementById('uploadScreen').style.display='flex';
   destroyCharts();ALL_RECORDS=[];DATA=null;FILTER_OPTIONS={};ACTIVE_FILTERS={};
   fileInput.value='';errorMsg.textContent='';
+  errorMsg.style.display='none';
+  loadingMsg.style.display='none';
 });
 
 function handleFiles(fileList){
-  errorMsg.textContent='';loadingMsg.style.display='block';
+  const uploadScreen=document.getElementById('uploadScreen');
+  errorMsg.textContent='';
+  errorMsg.style.display='none';
+  loadingMsg.style.display='block';
   const files=Array.from(fileList);
   const csvFiles=files.filter(f=>f.name.toLowerCase().endsWith('.csv'));
-  if(!csvFiles.length){loadingMsg.style.display='none';errorMsg.textContent='❌ No CSV files found.';return;}
+  if(!csvFiles.length){loadingMsg.style.display='none';errorMsg.textContent='❌ No CSV files found.';errorMsg.style.display='block';uploadScreen.classList.remove('storage-loading');document.getElementById('storageSpinner').style.display='none';document.getElementById('uploadControls').style.display='block';showFileUploadUI();return;}
   const readFile=f=>new Promise((resolve,reject)=>{
     const r=new FileReader();
     r.onload=e=>resolve(e.target.result);
@@ -605,10 +610,13 @@ function handleFiles(fileList){
       ACTIVE_FILTERS={date_from:'',date_to:'',subscription:new Set(),resource_type:new Set(),resource_group:new Set()};
       DATA=aggregate(ALL_RECORDS);
       loadingMsg.style.display='none';
+      uploadScreen.classList.remove('storage-loading');
+      document.getElementById('storageSpinner').style.display='none';
+      document.getElementById('uploadControls').style.display='block';
       const label=csvFiles.length===1?csvFiles[0].name:csvFiles.length+' files combined';
       showDashboard(label);
-    }catch(err){loadingMsg.style.display='none';errorMsg.textContent='❌ '+err.message;}
-  }).catch(err=>{loadingMsg.style.display='none';errorMsg.textContent='❌ '+err.message;});
+    }catch(err){loadingMsg.style.display='none';errorMsg.textContent='❌ '+err.message;errorMsg.style.display='block';uploadScreen.classList.remove('storage-loading');document.getElementById('storageSpinner').style.display='none';document.getElementById('uploadControls').style.display='block';showFileUploadUI();}
+  }).catch(err=>{loadingMsg.style.display='none';errorMsg.textContent='❌ '+err.message;errorMsg.style.display='block';uploadScreen.classList.remove('storage-loading');document.getElementById('storageSpinner').style.display='none';document.getElementById('uploadControls').style.display='block';showFileUploadUI();});
 }
 
 function destroyCharts(){chartInstances.forEach(c=>c.destroy());chartInstances=[]}
@@ -687,6 +695,10 @@ document.getElementById('demoBtn').addEventListener('click',()=>{
 });
 
 function showDashboard(filename){
+  const uploadScreen=document.getElementById('uploadScreen');
+  uploadScreen.classList.remove('storage-loading');
+  document.getElementById('storageSpinner').style.display='none';
+  document.getElementById('uploadControls').style.display='block';
   document.getElementById('uploadScreen').style.display='none';
   document.getElementById('dashboardScreen').style.display='block';
   const match=filename.match(/daily_costs_by_resource_([^_]+)_/);
@@ -1377,8 +1389,6 @@ window.onFilesLoaded = function(loadedFiles) {
     const file = new File([organized.costsContent], 'costs.csv', { type: 'text/csv' });
     handleFiles([file]);
   }
-  
-  hideFileUploadUI();
 };
 
 async function autoLoadFromStorage() {
