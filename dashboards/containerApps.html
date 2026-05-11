@@ -850,6 +850,8 @@ function showDashboard() {
   const parts = [];
   if (LOADED_FILES.summary)    parts.push('✓ summary');
   if (LOADED_FILES.timeseries) parts.push('✓ timeseries');
+  const mergeLabel = buildMergeStatusLabel();
+  if (mergeLabel) parts.push(mergeLabel);
   const dateRange = FILTER_OPTIONS.date_range;
   if (dateRange?.min && dateRange?.max) parts.push(`${dateRange.min} → ${dateRange.max}`);
   document.getElementById('dashMeta').textContent = parts.join('  ·  ');
@@ -867,12 +869,59 @@ function isSummaryFile(name)    { return /container_apps_summary/i.test(name); }
 function isTimeseriesFile(name) { return /container_apps_timeseries/i.test(name); }
 function isLegacyFile(name)     { return /container_apps/i.test(name) && !isSummaryFile(name) && !isTimeseriesFile(name); }
 
+function mergeUniqueRows(existingRows, incomingRows, keyBuilder) {
+  const merged = [];
+  const seen = new Set();
+
+  [...(existingRows || []), ...(incomingRows || [])].forEach(row => {
+    const key = keyBuilder(row);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    merged.push(row);
+  });
+
+  return merged;
+}
+
+function appendLoadedFilename(current, next) {
+  if (!next) return current;
+  if (!current) return next;
+  const parts = current.split(' | ').map(part => part.trim()).filter(Boolean);
+  if (parts.includes(next)) return current;
+  return `${current} | ${next}`;
+}
+
+function parseLoadedFileNames(value) {
+  if (!value) return [];
+  return value.split(' | ').map(part => part.trim()).filter(Boolean);
+}
+
+function getLoadedFileStats() {
+  const summaryFiles = parseLoadedFileNames(LOADED_FILES.summary);
+  const timeseriesFiles = parseLoadedFileNames(LOADED_FILES.timeseries);
+  return {
+    summaryCount: summaryFiles.length,
+    timeseriesCount: timeseriesFiles.length,
+    totalCount: summaryFiles.length + timeseriesFiles.length,
+  };
+}
+
+function buildMergeStatusLabel() {
+  const stats = getLoadedFileStats();
+  if (!stats.totalCount) return '';
+  return `Merged files: ${stats.summaryCount} summary + ${stats.timeseriesCount} timeseries`;
+}
+
 function updateUploadStatus() {
   const statusEl = document.getElementById('upload-status');
   const hintEl   = zone.querySelector('.hint');
   const msgs = [];
-  if (LOADED_FILES.summary)    msgs.push(`✅ Summary: ${LOADED_FILES.summary}`);
-  if (LOADED_FILES.timeseries) msgs.push(`✅ Timeseries: ${LOADED_FILES.timeseries}`);
+  const summaryFiles = parseLoadedFileNames(LOADED_FILES.summary);
+  const timeseriesFiles = parseLoadedFileNames(LOADED_FILES.timeseries);
+  if (summaryFiles.length)    msgs.push(`✅ Summary (${summaryFiles.length}): ${summaryFiles.join(' | ')}`);
+  if (timeseriesFiles.length) msgs.push(`✅ Timeseries (${timeseriesFiles.length}): ${timeseriesFiles.join(' | ')}`);
+  const mergeLabel = buildMergeStatusLabel();
+  if (mergeLabel) msgs.push(mergeLabel);
   if (statusEl) {
     const text = msgs.join('  ');
     statusEl.textContent = text;
@@ -920,25 +969,25 @@ function handleFile(file) {
       }
       const name = file.name;
       if (isSummaryFile(name)) {
-        SUMMARY_ROWS = rows;
-        LOADED_FILES.summary = name;
+        SUMMARY_ROWS = mergeUniqueRows(SUMMARY_ROWS, rows, row => JSON.stringify(row));
+        LOADED_FILES.summary = appendLoadedFilename(LOADED_FILES.summary, name);
       } else if (isTimeseriesFile(name)) {
-        TS_ROWS = rows;
-        LOADED_FILES.timeseries = name;
+        TS_ROWS = mergeUniqueRows(TS_ROWS, rows, row => JSON.stringify(row));
+        LOADED_FILES.timeseries = appendLoadedFilename(LOADED_FILES.timeseries, name);
       } else if (isLegacyFile(name)) {
         // Legacy single-file: use for both slots
-        SUMMARY_ROWS = rows;
-        TS_ROWS = rows;
-        LOADED_FILES.summary = name;
-        LOADED_FILES.timeseries = name;
+        SUMMARY_ROWS = mergeUniqueRows(SUMMARY_ROWS, rows, row => JSON.stringify(row));
+        TS_ROWS = mergeUniqueRows(TS_ROWS, rows, row => JSON.stringify(row));
+        LOADED_FILES.summary = appendLoadedFilename(LOADED_FILES.summary, name);
+        LOADED_FILES.timeseries = appendLoadedFilename(LOADED_FILES.timeseries, name);
       } else {
         // Fallback: sniff from columns
         if (rows[0] && 'cpu_series_value' in rows[0] && !('cpu_avg_cores' in rows[0])) {
-          TS_ROWS = rows;
-          LOADED_FILES.timeseries = name;
+          TS_ROWS = mergeUniqueRows(TS_ROWS, rows, row => JSON.stringify(row));
+          LOADED_FILES.timeseries = appendLoadedFilename(LOADED_FILES.timeseries, name);
         } else {
-          SUMMARY_ROWS = rows;
-          LOADED_FILES.summary = name;
+          SUMMARY_ROWS = mergeUniqueRows(SUMMARY_ROWS, rows, row => JSON.stringify(row));
+          LOADED_FILES.summary = appendLoadedFilename(LOADED_FILES.summary, name);
         }
       }
       updateUploadStatus();

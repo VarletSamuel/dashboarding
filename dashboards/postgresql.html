@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Azure Database for PostgreSQL Dashboard</title>
+<link rel="icon" type="image/png" href="../bin/delaware-dee-rgb.png">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../bin/dashboard-core.css">
+<link rel="stylesheet" href="../bin/dashboard-postgresql.css">
+<script src="../bin/storage-loader.js"></script>
+<script src="../bin/filter-bar-helper.js"></script>
+<script src="../bin/table-sort.js"></script>
+<script>
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+</head>
+<body class="ambient-glow">
+
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+  <h1>Azure Database for PostgreSQL Dashboard</h1>
+  <p>Upload the files exported by <code>get_postgresql.py</code>. Drop the <strong>summary</strong> and/or <strong>timeseries</strong> CSV files.</p>
+  <div id="upload-zone" class="drop-zone" style="max-width:480px;margin:0 auto">
+    <div class="icon">🐘</div>
+    <div class="label">Drop your CSV file(s) here</div>
+    <div class="hint">summary · timeseries · or both at once</div>
+  </div>
+  <input type="file" id="file-input" accept=".csv" multiple style="display:none"
+         title="Expected files: *_postgresql_summary_*.csv and/or *_postgresql_timeseries_*.csv">
+  <div id="upload-status" style="display:none;font-size:12px;color:var(--text-dim);text-align:center"></div>
+  <div style="margin-top:8px;color:var(--text-dim);font-size:13px;text-align:center">- or -</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+    <button class="btn btn--ghost" onclick="loadDemo()">Load Demo Data</button>
+  </div>
+</div>
+
+<div id="dashboardScreen" style="display:none">
+  <div class="topbar">
+    <h1><img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle"><span id="dashTitle">Azure Database for PostgreSQL Dashboard</span></h1>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+      <button class="topbar-btn" id="reloadBtn">↩ Load another CSV</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+
+  <div class="filter-bar" id="filterBar"></div>
+  <div class="kpi-row" id="kpis"></div>
+
+  <div class="env-section">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+      <div class="env-icon">▼</div>
+      <h2>Advisory Overview</h2>
+      <span class="env-summary" id="advisorySummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="advisory-strip" id="advisoryStrip"></div>
+    </div>
+  </div>
+
+  <div class="env-section">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+      <div class="env-icon">▼</div>
+      <h2>Server Overview</h2>
+      <span class="env-summary" id="cardsSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="server-overview-groups" id="serverCards"></div>
+    </div>
+  </div>
+
+  <div class="env-section">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+      <div class="env-icon">▼</div>
+      <h2>Server Detail</h2>
+      <span class="env-summary" id="tableSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="pg-table-wrap">
+        <table class="pg-table" id="detailTable"></table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let SUMMARY_ROWS = [];
+let TS_ROWS = [];
+let LOADED_FILES = { summary: null, timeseries: null };
+let AGGREGATED = [];
+let FILTER_OPTIONS = {};
+let ACTIVE_FILTERS = {};
+
+const FILTER_DEFS = [
+  { key: 'subscription', label: 'Subscription', icon: '📋' },
+  { key: 'location', label: 'Location', icon: '📍' },
+  { key: 'sku_tier', label: 'SKU Tier', icon: '⭐' },
+  { key: 'version', label: 'Version', icon: '🧬' },
+  { key: 'public_network_access', label: 'Network', icon: '🔐' },
+  { key: 'advisory_category', label: 'Advisory', icon: '💡' },
+];
+
+function pf(v) {
+  if (v === '' || v === undefined || v === null) return null;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function fmtNum(v, digits = 1) {
+  return v != null ? Number(v).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—';
+}
+
+function fmtInt(v) {
+  return v != null ? Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—';
+}
+
+function fmtPct(v) {
+  return v != null ? `${Number(v).toFixed(1)}%` : '—';
+}
+
+function h(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function parseCSV(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const lines = text.split(/\r?\n/).filter(line => line.trim());
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(';').map(part => part.trim());
+  return lines.slice(1).map(line => {
+    const parts = line.split(';');
+    const row = {};
+    headers.forEach((header, idx) => {
+      row[header] = (parts[idx] || '').trim();
+    });
+    return row;
+  });
+}
+
+function mergeUniqueRows(existingRows, incomingRows, keyBuilder) {
+  const merged = [];
+  const seen = new Set();
+
+  [...(existingRows || []), ...(incomingRows || [])].forEach(row => {
+    const key = keyBuilder(row);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    merged.push(row);
+  });
+
+  return merged;
+}
+
+function appendLoadedFilename(current, next) {
+  if (!next) return current;
+  if (!current) return next;
+  const parts = current.split(' | ').map(part => part.trim()).filter(Boolean);
+  if (parts.includes(next)) return current;
+  return `${current} | ${next}`;
+}
+
+function parseLoadedFileNames(value) {
+  if (!value) return [];
+  return value.split(' | ').map(part => part.trim()).filter(Boolean);
+}
+
+function getLoadedFileStats() {
+  const summaryFiles = parseLoadedFileNames(LOADED_FILES.summary);
+  const timeseriesFiles = parseLoadedFileNames(LOADED_FILES.timeseries);
+  return {
+    summaryCount: summaryFiles.length,
+    timeseriesCount: timeseriesFiles.length,
+    totalCount: summaryFiles.length + timeseriesFiles.length,
+  };
+}
+
+function buildMergeStatusLabel() {
+  const stats = getLoadedFileStats();
+  if (!stats.totalCount) return '';
+  const summaryPart = `${stats.summaryCount} summary`;
+  const tsPart = `${stats.timeseriesCount} timeseries`;
+  return `Merged files: ${summaryPart} + ${tsPart}`;
+}
+
+function timestampToDateKey(timestamp) {
+  if (!timestamp) return '';
+  const ms = Date.parse(timestamp);
+  if (Number.isNaN(ms)) return '';
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function getDateRange(tsRows) {
+  let minMs = null;
+  let maxMs = null;
+  (tsRows || []).forEach(row => {
+    const ms = Date.parse(row.timestamp || '');
+    if (Number.isNaN(ms)) return;
+    if (minMs == null || ms < minMs) minMs = ms;
+    if (maxMs == null || ms > maxMs) maxMs = ms;
+  });
+  if (minMs == null || maxMs == null) return null;
+  return {
+    min: new Date(minMs).toISOString().slice(0, 10),
+    max: new Date(maxMs).toISOString().slice(0, 10),
+  };
+}
+
+function extractFilterOptions(summaryRows, tsRows) {
+  const options = {
+    subscription: new Set(),
+    location: new Set(),
+    sku_tier: new Set(),
+    version: new Set(),
+    public_network_access: new Set(),
+    advisory_category: new Set(),
+  };
+
+  (summaryRows || []).forEach(row => {
+    const subscription = row.subscription_name || row.subscription_id;
+    if (subscription) options.subscription.add(subscription);
+    if (row.location) options.location.add(row.location);
+    if (row.sku_tier) options.sku_tier.add(row.sku_tier);
+    if (row.version) options.version.add(row.version);
+    if (row.public_network_access) options.public_network_access.add(row.public_network_access);
+    if (row.advisory_category) options.advisory_category.add(row.advisory_category);
+  });
+
+  return {
+    date_range: getDateRange(tsRows),
+    subscription: [...options.subscription].sort(),
+    location: [...options.location].sort(),
+    sku_tier: [...options.sku_tier].sort(),
+    version: [...options.version].sort(),
+    public_network_access: [...options.public_network_access].sort(),
+    advisory_category: [...options.advisory_category].sort(),
+  };
+}
+
+function getFilteredSummaryRows() {
+  return SUMMARY_ROWS.filter(row => {
+    const subscription = row.subscription_name || row.subscription_id || '';
+    if (ACTIVE_FILTERS.subscription?.size && !ACTIVE_FILTERS.subscription.has(subscription)) return false;
+    if (ACTIVE_FILTERS.location?.size && !ACTIVE_FILTERS.location.has(row.location || '')) return false;
+    if (ACTIVE_FILTERS.sku_tier?.size && !ACTIVE_FILTERS.sku_tier.has(row.sku_tier || '')) return false;
+    if (ACTIVE_FILTERS.version?.size && !ACTIVE_FILTERS.version.has(row.version || '')) return false;
+    if (ACTIVE_FILTERS.public_network_access?.size && !ACTIVE_FILTERS.public_network_access.has(row.public_network_access || '')) return false;
+    if (ACTIVE_FILTERS.advisory_category?.size && !ACTIVE_FILTERS.advisory_category.has(row.advisory_category || '')) return false;
+    return true;
+  });
+}
+
+function getFilteredTsRows(filteredServerIds) {
+  return TS_ROWS.filter(row => {
+    if (filteredServerIds?.size && !filteredServerIds.has(row.server_id || '')) return false;
+    if (ACTIVE_FILTERS.date_from || ACTIVE_FILTERS.date_to) {
+      const rowDate = timestampToDateKey(row.timestamp);
+      if (rowDate) {
+        if (ACTIVE_FILTERS.date_from && rowDate < ACTIVE_FILTERS.date_from) return false;
+        if (ACTIVE_FILTERS.date_to && rowDate > ACTIVE_FILTERS.date_to) return false;
+      }
+    }
+    return true;
+  });
+}
+
+function aggregate(summaryRows, tsRows) {
+  const tsByServer = new Map();
+  (tsRows || []).forEach(row => {
+    const key = row.server_id || '';
+    if (!key) return;
+    if (!tsByServer.has(key)) tsByServer.set(key, []);
+    tsByServer.get(key).push({
+      timestamp: row.timestamp,
+      cpu: pf(row.cpu_percent),
+      memory: pf(row.memory_percent),
+      storage: pf(row.storage_percent),
+      connections: pf(row.active_connections),
+      lag: pf(row.replication_lag_seconds),
+    });
+  });
+
+  return (summaryRows || []).map(row => ({
+    ...row,
+    cpu_avg_pct: pf(row.cpu_avg_pct),
+    cpu_p95_pct: pf(row.cpu_p95_pct),
+    cpu_peak_pct: pf(row.cpu_peak_pct),
+    memory_avg_pct: pf(row.memory_avg_pct),
+    memory_p95_pct: pf(row.memory_p95_pct),
+    memory_peak_pct: pf(row.memory_peak_pct),
+    storage_pct_avg: pf(row.storage_pct_avg),
+    storage_pct_peak: pf(row.storage_pct_peak),
+    active_connections_avg: pf(row.active_connections_avg),
+    active_connections_peak: pf(row.active_connections_peak),
+    max_connections_peak: pf(row.max_connections_peak),
+    iops_avg: pf(row.iops_avg),
+    iops_peak: pf(row.iops_peak),
+    network_ingress_total_mib: pf(row.network_ingress_total_mib),
+    network_egress_total_mib: pf(row.network_egress_total_mib),
+    replication_lag_peak_sec: pf(row.replication_lag_peak_sec),
+    observed_sample_count: pf(row.observed_sample_count),
+    storage_used_avg_mib: pf(row.storage_used_avg_mib),
+    backup_storage_used_avg_mib: pf(row.backup_storage_used_avg_mib),
+    series: (tsByServer.get(row.server_id || '') || []).sort((a, b) => Date.parse(a.timestamp || '') - Date.parse(b.timestamp || '')),
+  })).sort((a, b) => {
+    const catA = a.advisory_category || '';
+    const catB = b.advisory_category || '';
+    return catA.localeCompare(catB) || (a.server_name || '').localeCompare(b.server_name || '');
+  });
+}
+
+function sparkSVG(series, pick, color) {
+  const values = (series || []).map(pick).filter(v => v != null);
+  if (values.length < 2) return '<svg viewBox="0 0 100 36"></svg>';
+  const w = 100;
+  const h = 36;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const points = values.map((value, idx) => {
+    const x = (idx / (values.length - 1)) * w;
+    const y = h - (((value - min) / range) * (h - 4) + 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const area = `0,${h} ${points} ${w},${h}`;
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polygon points="${area}" fill="${color}" opacity="0.18"></polygon><polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>`;
+}
+
+function buildPortalLink(server) {
+  const serverId = (server.server_id || '').trim();
+  if (!serverId) return '';
+  return `https://portal.azure.com/#resource${serverId}/overview`;
+}
+
+function renderKPIs() {
+  const container = document.getElementById('kpis');
+  if (!AGGREGATED.length) {
+    container.innerHTML = '<div class="kpi">No PostgreSQL servers found for the selected filters.</div>';
+    return;
+  }
+
+  const cpuServers = AGGREGATED.filter(item => item.cpu_p95_pct != null);
+  const memServers = AGGREGATED.filter(item => item.memory_p95_pct != null);
+  const storageServers = AGGREGATED.filter(item => item.storage_pct_peak != null);
+  const replicaServers = AGGREGATED.filter(item => item.replication_role && item.replication_role.toLowerCase() !== 'none');
+
+  const avgCpu = cpuServers.length ? cpuServers.reduce((sum, item) => sum + item.cpu_p95_pct, 0) / cpuServers.length : null;
+  const avgMem = memServers.length ? memServers.reduce((sum, item) => sum + item.memory_p95_pct, 0) / memServers.length : null;
+  const peakStorage = storageServers.length ? Math.max(...storageServers.map(item => item.storage_pct_peak)) : null;
+
+  container.innerHTML = `
+    <div class="kpi"><div class="label">Servers</div><div class="value">${fmtInt(AGGREGATED.length)}</div></div>
+    <div class="kpi"><div class="label">CPU p95</div><div class="value">${fmtPct(avgCpu)}</div></div>
+    <div class="kpi"><div class="label">Memory p95</div><div class="value">${fmtPct(avgMem)}</div></div>
+    <div class="kpi"><div class="label">Peak Storage</div><div class="value">${fmtPct(peakStorage)}</div></div>
+    <div class="kpi"><div class="label">Replicated</div><div class="value">${fmtInt(replicaServers.length)}</div></div>
+  `;
+}
+
+function renderAdvisory() {
+  const strip = document.getElementById('advisoryStrip');
+  const summary = document.getElementById('advisorySummary');
+  if (!AGGREGATED.length) {
+    strip.innerHTML = '<div class="advisory-pill">No advisory data available.</div>';
+    summary.textContent = '0 items';
+    return;
+  }
+
+  const counts = new Map();
+  AGGREGATED.forEach(item => {
+    const key = item.advisory_category || 'uncategorized';
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+
+  strip.innerHTML = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([key, value]) => `<div class="advisory-pill"><strong>${h(key)}</strong> · ${fmtInt(value)} server(s)</div>`)
+    .join('');
+  summary.textContent = `${fmtInt(counts.size)} category${counts.size === 1 ? '' : 'ies'}`;
+}
+
+function renderCards() {
+  const grid = document.getElementById('serverCards');
+  const summary = document.getElementById('cardsSummary');
+  if (!AGGREGATED.length) {
+    grid.innerHTML = '<div class="pg-card"><h3>No servers in scope</h3><div class="pg-meta">Adjust the active filters or load a different export.</div></div>';
+    summary.textContent = '0 cards';
+    return;
+  }
+
+  const bySubscription = new Map();
+  AGGREGATED.forEach(server => {
+    const key = server.subscription_name || server.subscription_id || 'Unknown subscription';
+    if (!bySubscription.has(key)) bySubscription.set(key, []);
+    bySubscription.get(key).push(server);
+  });
+
+  const sections = [...bySubscription.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0], undefined, { sensitivity: 'base', numeric: true }));
+
+  grid.innerHTML = sections.map(([subscription, servers]) => {
+    const cards = servers.map(server => {
+      const link = buildPortalLink(server);
+      const cpuSpark = sparkSVG(server.series, point => point.cpu, '#22c55e');
+      const connSpark = sparkSVG(server.series, point => point.connections, '#06b6d4');
+      return `
+        <div class="pg-card">
+          <div class="pg-card-head">
+            <div>
+              <h3>${link ? `<a href="${link}" target="_blank" rel="noopener noreferrer">${h(server.server_name)}</a>` : h(server.server_name)}</h3>
+              <div class="pg-meta">${h(server.resource_group)} · ${h(server.location)}</div>
+            </div>
+            <span class="pg-badge ${h(server.advisory_category)}">${h(server.advisory_category || 'review')}</span>
+          </div>
+          <div class="pg-badges">
+            <span class="pg-badge">${h(server.sku_name || 'Unknown SKU')}</span>
+            <span class="pg-badge">v${h(server.version || 'n/a')}</span>
+            <span class="pg-badge">${h(server.public_network_access || 'Network n/a')}</span>
+          </div>
+          <div class="pg-stats">
+            <div class="pg-stat"><div class="pg-stat-label">CPU p95</div><div class="pg-stat-value">${fmtPct(server.cpu_p95_pct)}</div></div>
+            <div class="pg-stat"><div class="pg-stat-label">Memory p95</div><div class="pg-stat-value">${fmtPct(server.memory_p95_pct)}</div></div>
+            <div class="pg-stat"><div class="pg-stat-label">Storage Peak</div><div class="pg-stat-value">${fmtPct(server.storage_pct_peak)}</div></div>
+            <div class="pg-stat"><div class="pg-stat-label">Conn Peak</div><div class="pg-stat-value">${fmtNum(server.active_connections_peak, 0)}</div></div>
+          </div>
+          <div class="spark-row"><div class="spark-label">CPU trend</div><div class="spark-wrap">${cpuSpark}</div></div>
+          <div class="spark-row"><div class="spark-label">Conn trend</div><div class="spark-wrap">${connSpark}</div></div>
+          <div class="pg-meta">${h(server.advisory_reason || '')}</div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="env-section server-overview-group">
+        <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+          <div class="env-icon">▼</div>
+          <h2>${h(subscription)}</h2>
+          <span class="env-summary">${fmtInt(servers.length)} server(s)</span>
+        </div>
+        <div class="env-body">
+          <div class="pg-grid">${cards}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  summary.textContent = `${fmtInt(sections.length)} subscription section(s) · ${fmtInt(AGGREGATED.length)} server card(s)`;
+}
+
+function renderTable() {
+  const table = document.getElementById('detailTable');
+  const summary = document.getElementById('tableSummary');
+  if (!AGGREGATED.length) {
+    table.innerHTML = '';
+    summary.textContent = '0 rows';
+    return;
+  }
+
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Server</th>
+        <th>SKU</th>
+        <th>CPU p95</th>
+        <th>Memory p95</th>
+        <th>Storage Peak</th>
+        <th>Conn Peak</th>
+        <th>Ingress</th>
+        <th>Egress</th>
+        <th>HA</th>
+        <th>Network</th>
+        <th>Advisory</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${AGGREGATED.map(server => {
+        const link = buildPortalLink(server);
+        return `
+          <tr>
+            <td>${link ? `<a href="${link}" target="_blank" rel="noopener noreferrer">${h(server.server_name)}</a>` : h(server.server_name)}<div class="pg-meta">${h(server.subscription_name || server.subscription_id)}</div></td>
+            <td>${h(server.sku_name || '')}<div class="pg-meta">${h(server.sku_tier || '')}</div></td>
+            <td>${fmtPct(server.cpu_p95_pct)}</td>
+            <td>${fmtPct(server.memory_p95_pct)}</td>
+            <td>${fmtPct(server.storage_pct_peak)}</td>
+            <td>${fmtNum(server.active_connections_peak, 0)} / ${fmtNum(server.max_connections_peak, 0)}</td>
+            <td>${fmtNum(server.network_ingress_total_mib, 1)} MiB</td>
+            <td>${fmtNum(server.network_egress_total_mib, 1)} MiB</td>
+            <td>${h(server.high_availability_mode || 'Disabled')}<div class="pg-meta">${h(server.standby_availability_zone || '')}</div></td>
+            <td>${h(server.public_network_access || '')}<div class="pg-meta">${h(server.private_dns_zone_id ? 'Private DNS' : 'No private DNS')}</div></td>
+            <td><span class="pg-badge ${h(server.advisory_category)}">${h(server.advisory_category || 'review')}</span><div class="pg-meta">${h(server.advisory_reason || '')}</div></td>
+          </tr>
+        `;
+      }).join('')}
+    </tbody>
+  `;
+  summary.textContent = `${fmtInt(AGGREGATED.length)} row(s)`;
+}
+
+function applyFilters() {
+  const filteredSummary = getFilteredSummaryRows();
+  const filteredServerIds = new Set(filteredSummary.map(row => row.server_id).filter(Boolean));
+  const filteredTs = getFilteredTsRows(filteredServerIds);
+  AGGREGATED = aggregate(filteredSummary, filteredTs);
+  renderKPIs();
+  renderAdvisory();
+  renderCards();
+  renderTable();
+}
+
+function showDashboard() {
+  hideStorageSpinner();
+  document.getElementById('uploadScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'block';
+
+  let customer = '';
+  const filename = LOADED_FILES.summary || LOADED_FILES.timeseries || '';
+  const match = filename.match(/^([A-Za-z0-9]+)_/);
+  if (match) customer = match[1];
+  document.getElementById('dashTitle').textContent = (customer ? `${customer} - ` : '') + 'Azure Database for PostgreSQL Dashboard';
+
+  const parts = [];
+  if (LOADED_FILES.summary) parts.push('summary');
+  if (LOADED_FILES.timeseries) parts.push('timeseries');
+  const mergeLabel = buildMergeStatusLabel();
+  if (mergeLabel) parts.push(mergeLabel);
+  const range = FILTER_OPTIONS.date_range;
+  if (range?.min && range?.max) parts.push(`${range.min} -> ${range.max}`);
+  document.getElementById('dashMeta').textContent = parts.join(' · ');
+
+  buildFilterBar();
+  renderKPIs();
+  renderAdvisory();
+  renderCards();
+  renderTable();
+}
+
+function isSummaryFile(name) { return /postgresql_summary/i.test(name); }
+function isTimeseriesFile(name) { return /postgresql_timeseries/i.test(name); }
+
+function updateUploadStatus() {
+  const statusEl = document.getElementById('upload-status');
+  const hintEl = document.querySelector('#upload-zone .hint');
+  const msgs = [];
+  const summaryFiles = parseLoadedFileNames(LOADED_FILES.summary);
+  const timeseriesFiles = parseLoadedFileNames(LOADED_FILES.timeseries);
+  if (summaryFiles.length) msgs.push(`Summary (${summaryFiles.length}): ${summaryFiles.join(' | ')}`);
+  if (timeseriesFiles.length) msgs.push(`Timeseries (${timeseriesFiles.length}): ${timeseriesFiles.join(' | ')}`);
+  const mergeLabel = buildMergeStatusLabel();
+  if (mergeLabel) msgs.push(mergeLabel);
+  if (msgs.length) {
+    statusEl.textContent = msgs.join(' | ');
+    statusEl.style.display = 'block';
+  } else {
+    statusEl.textContent = '';
+    statusEl.style.display = 'none';
+  }
+  if (hintEl) {
+    hintEl.textContent = LOADED_FILES.summary && LOADED_FILES.timeseries
+      ? 'Both files loaded'
+      : (LOADED_FILES.summary || LOADED_FILES.timeseries ? 'Drop the other file to complete' : 'summary · timeseries · or both at once');
+  }
+}
+
+function tryShowDashboard() {
+  if (!SUMMARY_ROWS.length && !TS_ROWS.length) return;
+  FILTER_OPTIONS = extractFilterOptions(SUMMARY_ROWS, TS_ROWS);
+  ACTIVE_FILTERS = {
+    subscription: new Set(),
+    location: new Set(),
+    sku_tier: new Set(),
+    version: new Set(),
+    public_network_access: new Set(),
+    advisory_category: new Set(),
+    date_from: FILTER_OPTIONS.date_range?.min || '',
+    date_to: FILTER_OPTIONS.date_range?.max || '',
+  };
+  const filteredServerIds = new Set(SUMMARY_ROWS.map(row => row.server_id).filter(Boolean));
+  AGGREGATED = aggregate(SUMMARY_ROWS, getFilteredTsRows(filteredServerIds));
+  showDashboard();
+}
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = event => {
+    const text = event.target.result || '';
+    const rows = parseCSV(text);
+    if (isSummaryFile(file.name)) {
+      SUMMARY_ROWS = mergeUniqueRows(
+        SUMMARY_ROWS,
+        rows,
+        row => row.server_id || `${row.subscription_id || ''}|${row.server_name || ''}`
+      );
+      LOADED_FILES.summary = appendLoadedFilename(LOADED_FILES.summary, file.name);
+    } else if (isTimeseriesFile(file.name)) {
+      TS_ROWS = mergeUniqueRows(
+        TS_ROWS,
+        rows,
+        row => `${row.server_id || ''}|${row.timestamp || ''}`
+      );
+      LOADED_FILES.timeseries = appendLoadedFilename(LOADED_FILES.timeseries, file.name);
+    } else {
+      alert(`Unrecognized file: ${file.name}`);
+      return;
+    }
+    updateUploadStatus();
+    tryShowDashboard();
+  };
+  reader.readAsText(file);
+}
+
+const zone = document.getElementById('upload-zone');
+const fileInput = document.getElementById('file-input');
+
+zone.addEventListener('click', () => fileInput.click());
+zone.addEventListener('dragover', event => { event.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', event => {
+  event.preventDefault();
+  zone.classList.remove('dragover');
+  [...event.dataTransfer.files].forEach(handleFile);
+});
+fileInput.addEventListener('change', event => {
+  [...event.target.files].forEach(handleFile);
+  fileInput.value = '';
+});
+
+document.getElementById('reloadBtn').addEventListener('click', () => {
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('uploadScreen').style.display = 'flex';
+  SUMMARY_ROWS = [];
+  TS_ROWS = [];
+  LOADED_FILES = { summary: null, timeseries: null };
+  AGGREGATED = [];
+  FILTER_OPTIONS = {};
+  ACTIVE_FILTERS = {};
+  updateUploadStatus();
+});
+
+function loadDemo() {
+  const now = Date.now();
+  const ids = [
+    '/subscriptions/demo-sub/resourceGroups/rg-demo/providers/Microsoft.DBforPostgreSQL/flexibleServers/demo-psql-01',
+    '/subscriptions/demo-sub/resourceGroups/rg-demo/providers/Microsoft.DBforPostgreSQL/flexibleServers/demo-psql-02',
+  ];
+  const summaryHeader = SUMMARY_ROWS = parseCSV([
+    'tenant_id;subscription_id;subscription_name;resource_group;server_name;server_id;location;version;state;create_mode;replication_role;administrator_login;fully_qualified_domain_name;sku_name;sku_tier;compute_tier;vcores;storage_size_gib;storage_tier;storage_auto_grow;storage_used_avg_mib;storage_used_peak_mib;storage_pct_avg;storage_pct_peak;backup_retention_days;geo_redundant_backup;backup_storage_used_avg_mib;high_availability_mode;standby_availability_zone;availability_zone;public_network_access;delegated_subnet_id;private_dns_zone_id;active_directory_auth_enabled;password_auth_enabled;iops_avg;iops_peak;cpu_avg_pct;cpu_p95_pct;cpu_peak_pct;memory_avg_pct;memory_p95_pct;memory_peak_pct;active_connections_avg;active_connections_peak;max_connections_peak;connections_failed_total;network_ingress_total_mib;network_egress_total_mib;replication_lag_peak_sec;observed_sample_count;advisory_category;advisory_reason;tags',
+    `demo-tenant;demo-sub;Demo Subscription;rg-demo;demo-psql-01;${ids[0]};westeurope;16;Ready;Default;Primary;pgadmin;demo-psql-01.postgres.database.azure.com;Standard_D4ds_v5;GeneralPurpose;GeneralPurpose;4;512;Premium;Enabled;164000;182000;32.0;38.5;14;Disabled;11200;ZoneRedundant;2;1;Disabled;;;Enabled;Enabled;145;220;24.2;37.1;49.8;48.3;61.4;72.1;18.0;31.0;500;0;650;430;0;24;healthy;No clear pressure or oversizing signal from the observed metric window.;env=demo`,
+    `demo-tenant;demo-sub;Demo Subscription;rg-demo;demo-psql-02;${ids[1]};northeurope;15;Ready;Replica;AsyncReplica;pgadmin;demo-psql-02.postgres.database.azure.com;Standard_B2ms;Burstable;Burstable;2;256;Premium;Enabled;68000;74000;41.0;46.0;7;Enabled;5600;SameZone;;1;Enabled;;;Enabled;Enabled;58;92;12.1;18.4;29.0;26.5;34.8;43.2;4.0;9.0;250;2;120;86;135;24;replication-review;Observed read replica lag above 5 minutes; review replica health or workload split.;env=demo`
+  ].join('\n'));
+
+  const tsLines = ['server_id;timestamp;cpu_percent;memory_percent;storage_percent;storage_used;active_connections;max_connections;iops;connections_failed;network_bytes_ingress;network_bytes_egress;backup_storage_used;replication_lag_seconds'];
+  for (let i = 0; i < 18; i++) {
+    const ts = new Date(now - (17 - i) * 60 * 60 * 1000).toISOString().replace(/\.\d+Z/, 'Z');
+    tsLines.push(`${ids[0]};${ts};${18 + i * 1.7};${44 + i * 1.2};${30 + i * 0.4};${160000000000 + i * 350000000};${12 + i};500;${110 + i * 3};0;${22000000 + i * 1200000};${16000000 + i * 950000};${9200000000 + i * 5000000};0`);
+    tsLines.push(`${ids[1]};${ts};${8 + i * 0.8};${22 + i * 0.9};${38 + i * 0.5};${69000000000 + i * 240000000};${2 + i * 0.3};250;${42 + i * 1.5};${i % 5 === 0 ? 1 : 0};${6000000 + i * 450000};${4500000 + i * 300000};${5100000000 + i * 3000000};${120 + i * 3}`);
+  }
+  TS_ROWS = parseCSV(tsLines.join('\n'));
+  LOADED_FILES = { summary: 'DEMO_postgresql_summary.csv', timeseries: 'DEMO_postgresql_timeseries.csv' };
+  updateUploadStatus();
+  tryShowDashboard();
+}
+
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('dco-theme', next);
+}
+document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+document.getElementById('themeToggleUpload').addEventListener('click', toggleTheme);
+
+function ensureStorageSpinner() {
+  let spinner = document.getElementById('storageSpinner');
+  if (spinner) return spinner;
+  spinner = document.createElement('div');
+  spinner.id = 'storageSpinner';
+  spinner.innerHTML = '<div class="spinner-ring"></div><div class="spinner-label">Loading data from Azure Storage...<div class="spinner-step" id="spinnerStep">Connecting...</div></div>';
+  document.getElementById('uploadScreen').insertBefore(spinner, document.getElementById('uploadScreen').children[1]);
+  return spinner;
+}
+
+function setStorageSpinner(stepText) {
+  const spinner = ensureStorageSpinner();
+  const stepEl = document.getElementById('spinnerStep');
+  if (stepEl && stepText) stepEl.textContent = stepText;
+
+  const uploadScreen = document.getElementById('uploadScreen');
+  if (uploadScreen) {
+    Array.from(uploadScreen.children).forEach(el => {
+      if (el.id === 'storageSpinner') return;
+      if (el.dataset.prevDisplay === undefined) el.dataset.prevDisplay = el.style.display || '';
+      el.style.display = 'none';
+    });
+  }
+
+  spinner.style.display = 'flex';
+}
+
+function hideStorageSpinner() {
+  const spinner = document.getElementById('storageSpinner');
+  if (spinner) spinner.style.display = 'none';
+
+  const uploadScreen = document.getElementById('uploadScreen');
+  if (uploadScreen) {
+    Array.from(uploadScreen.children).forEach(el => {
+      if (el.id === 'storageSpinner') return;
+      const prev = (el.dataset.prevDisplay !== undefined) ? el.dataset.prevDisplay : '';
+      el.style.display = prev;
+      delete el.dataset.prevDisplay;
+    });
+  }
+}
+
+window.onFilesLoaded = function(loadedFiles) {
+  loadedFiles.forEach(file => {
+    if (isSummaryFile(file.name)) {
+      SUMMARY_ROWS = mergeUniqueRows(
+        SUMMARY_ROWS,
+        parseCSV(file.content || ''),
+        row => row.server_id || `${row.subscription_id || ''}|${row.server_name || ''}`
+      );
+      LOADED_FILES.summary = appendLoadedFilename(LOADED_FILES.summary, file.name);
+    } else if (isTimeseriesFile(file.name)) {
+      TS_ROWS = mergeUniqueRows(
+        TS_ROWS,
+        parseCSV(file.content || ''),
+        row => `${row.server_id || ''}|${row.timestamp || ''}`
+      );
+      LOADED_FILES.timeseries = appendLoadedFilename(LOADED_FILES.timeseries, file.name);
+    }
+  });
+  updateUploadStatus();
+  tryShowDashboard();
+};
+
+async function autoLoadFromStorage() {
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+
+  if (hasConnection) {
+    setStorageSpinner('Connecting...');
+  }
+
+  const loaded = await initStorageFileLoader('postgresql', step => {
+    setStorageSpinner(step || 'Loading...');
+  });
+
+  if (!loaded) {
+    hideStorageSpinner();
+    document.getElementById('uploadScreen').style.display = 'flex';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+</script>
+</body>
+</html>

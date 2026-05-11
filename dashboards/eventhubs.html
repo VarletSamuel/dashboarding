@@ -964,6 +964,8 @@ function showDashboard() {
   else                          parts.push(`<span style="color:var(--text-muted)">○ summary</span>`);
   if (LOADED_FILES.timeseries) parts.push(`<span style="color:var(--green)">✓ timeseries</span>`);
   else                          parts.push(`<span style="color:var(--text-muted)">○ timeseries</span>`);
+  const mergeLabel = buildMergeStatusLabel();
+  if (mergeLabel) parts.push(`<span style="color:var(--text-dim)">${mergeLabel}</span>`);
 
   const period = AGG.time_from && AGG.time_to
     ? `${formatDateOnly(AGG.time_from)} → ${formatDateOnly(AGG.time_to)}`
@@ -1004,11 +1006,58 @@ function isLegacyFile(filename) {
   return /eventhub_namespaces/i.test(filename);
 }
 
+function mergeUniqueRows(existingRows, incomingRows, keyBuilder) {
+  const merged = [];
+  const seen = new Set();
+
+  [...(existingRows || []), ...(incomingRows || [])].forEach(row => {
+    const key = keyBuilder(row);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    merged.push(row);
+  });
+
+  return merged;
+}
+
+function appendLoadedFilename(current, next) {
+  if (!next) return current;
+  if (!current) return next;
+  const parts = current.split(' | ').map(part => part.trim()).filter(Boolean);
+  if (parts.includes(next)) return current;
+  return `${current} | ${next}`;
+}
+
+function parseLoadedFileNames(value) {
+  if (!value) return [];
+  return value.split(' | ').map(part => part.trim()).filter(Boolean);
+}
+
+function getLoadedFileStats() {
+  const summaryFiles = parseLoadedFileNames(LOADED_FILES.summary);
+  const timeseriesFiles = parseLoadedFileNames(LOADED_FILES.timeseries);
+  return {
+    summaryCount: summaryFiles.length,
+    timeseriesCount: timeseriesFiles.length,
+    totalCount: summaryFiles.length + timeseriesFiles.length,
+  };
+}
+
+function buildMergeStatusLabel() {
+  const stats = getLoadedFileStats();
+  if (!stats.totalCount) return '';
+  return `Merged files: ${stats.summaryCount} summary + ${stats.timeseriesCount} timeseries`;
+}
+
 function updateUploadStatus() {
   const el = document.getElementById('upload-status');
   const parts = [];
-  if (LOADED_FILES.summary)    parts.push(`✓ summary: ${LOADED_FILES.summary}`);
-  if (LOADED_FILES.timeseries) parts.push(`✓ timeseries: ${LOADED_FILES.timeseries}`);
+  const summaryFiles = parseLoadedFileNames(LOADED_FILES.summary);
+  const timeseriesFiles = parseLoadedFileNames(LOADED_FILES.timeseries);
+  if (summaryFiles.length)    parts.push(`✓ summary (${summaryFiles.length}): ${summaryFiles.join(' | ')}`);
+  if (timeseriesFiles.length) parts.push(`✓ timeseries (${timeseriesFiles.length}): ${timeseriesFiles.join(' | ')}`);
+  const mergeLabel = buildMergeStatusLabel();
+  if (mergeLabel) parts.push(mergeLabel);
   const text = parts.length ? parts.join('  ·  ') : '';
   el.textContent = text;
   el.style.display = text ? 'block' : 'none';
@@ -1055,24 +1104,24 @@ function handleFile(file) {
       }
 
       if (isSummaryFile(file.name)) {
-        SUMMARY_ROWS = rows;
-        LOADED_FILES.summary = file.name;
+        SUMMARY_ROWS = mergeUniqueRows(SUMMARY_ROWS, rows, row => JSON.stringify(row));
+        LOADED_FILES.summary = appendLoadedFilename(LOADED_FILES.summary, file.name);
       } else if (isTimeseriesFile(file.name)) {
-        TS_ROWS = rows;
-        LOADED_FILES.timeseries = file.name;
+        TS_ROWS = mergeUniqueRows(TS_ROWS, rows, row => JSON.stringify(row));
+        LOADED_FILES.timeseries = appendLoadedFilename(LOADED_FILES.timeseries, file.name);
       } else if (isLegacyFile(file.name)) {
-        SUMMARY_ROWS = rows;
-        TS_ROWS = rows;
-        LOADED_FILES.summary = file.name;
-        LOADED_FILES.timeseries = file.name;
+        SUMMARY_ROWS = mergeUniqueRows(SUMMARY_ROWS, rows, row => JSON.stringify(row));
+        TS_ROWS = mergeUniqueRows(TS_ROWS, rows, row => JSON.stringify(row));
+        LOADED_FILES.summary = appendLoadedFilename(LOADED_FILES.summary, file.name);
+        LOADED_FILES.timeseries = appendLoadedFilename(LOADED_FILES.timeseries, file.name);
       } else {
         const cols = Object.keys(rows[0] || {});
         if (cols.includes('namespace_cost_risk')) {
-          SUMMARY_ROWS = rows;
-          LOADED_FILES.summary = file.name;
+          SUMMARY_ROWS = mergeUniqueRows(SUMMARY_ROWS, rows, row => JSON.stringify(row));
+          LOADED_FILES.summary = appendLoadedFilename(LOADED_FILES.summary, file.name);
         } else if (cols.includes('estimated_required_tu')) {
-          TS_ROWS = rows;
-          LOADED_FILES.timeseries = file.name;
+          TS_ROWS = mergeUniqueRows(TS_ROWS, rows, row => JSON.stringify(row));
+          LOADED_FILES.timeseries = appendLoadedFilename(LOADED_FILES.timeseries, file.name);
         } else {
           alert('Cannot determine file type from columns. Expected summary or timeseries file from get_eventhubnamespaces.py.');
           return;

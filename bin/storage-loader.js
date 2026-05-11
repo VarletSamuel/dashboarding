@@ -369,9 +369,10 @@ async function initStorageFileLoader(dashboardId, onStep) {
     dashboard.files.forEach(f => console.log(`   - ${f.type}: ${f.filename}`));
 
     const loadedFiles = await loadFilesFromManifest(client, manifest, dashboard, step);
-    console.log(`✅ [storage-loader] Loaded ${loadedFiles.length} files from storage`);
+    const normalizedFiles = mergeLoadedFilesByType(loadedFiles);
+    console.log(`✅ [storage-loader] Loaded ${loadedFiles.length} files from storage (${normalizedFiles.length} type payload(s) after merge)`);
 
-    if (loadedFiles.length === 0) {
+    if (normalizedFiles.length === 0) {
       console.warn(`⚠️ [storage-loader] No valid files loaded from manifest; using upload fallback UI`);
       return false;
     }
@@ -379,7 +380,7 @@ async function initStorageFileLoader(dashboardId, onStep) {
     // Trigger dashboard render
     if (typeof onFilesLoaded === 'function') {
       console.log(`🚀 [storage-loader] Triggering onFilesLoaded callback`);
-      onFilesLoaded(loadedFiles);
+      onFilesLoaded(normalizedFiles);
     } else {
       console.warn(`⚠️ [storage-loader] onFilesLoaded callback not found`);
     }
@@ -433,6 +434,64 @@ async function loadFilesFromManifest(client, manifest, dashboard, onStep) {
   }
 
   return files;
+}
+
+function mergeCsvContents(csvContents) {
+  const rows = [];
+  const seen = new Set();
+  let header = null;
+
+  (csvContents || []).forEach(content => {
+    if (typeof content !== 'string') return;
+    const lines = content
+      .replace(/^\uFEFF/, '')
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean);
+
+    if (!lines.length) return;
+    if (!header) header = lines[0];
+
+    lines.slice(1).forEach(line => {
+      if (seen.has(line)) return;
+      seen.add(line);
+      rows.push(line);
+    });
+  });
+
+  if (!header) return '';
+  return [header, ...rows].join('\n');
+}
+
+function mergeLoadedFilesByType(files) {
+  const groups = new Map();
+
+  (files || []).forEach(file => {
+    const type = file.type || 'unknown';
+    if (!groups.has(type)) groups.set(type, []);
+    groups.get(type).push(file);
+  });
+
+  const merged = [];
+  groups.forEach((typedFiles, type) => {
+    if (typedFiles.length === 1) {
+      merged.push(typedFiles[0]);
+      return;
+    }
+
+    const mergedContent = mergeCsvContents(typedFiles.map(file => file.content || ''));
+    const mergedName = typedFiles.map(file => file.name).join(' | ');
+
+    console.log(`   ↻ Merged ${typedFiles.length} file(s) for type '${type}'`);
+    merged.push({
+      name: mergedName,
+      type,
+      content: mergedContent,
+      sourceFiles: typedFiles.map(file => file.name),
+    });
+  });
+
+  return merged;
 }
 
 /**

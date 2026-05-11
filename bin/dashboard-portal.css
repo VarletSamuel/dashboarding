@@ -1,0 +1,338 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   DASHBOARD PORTAL — Index Page Styles
+   ═══════════════════════════════════════════════════════════════════════════
+   This file contains styles specific to index.html and its storage modal.
+   It is intentionally split from dashboard-core.css to keep the core shared.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PORTAL / INDEX
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.portal-hero {
+  text-align: center;
+  padding: 80px var(--sp-xl) 48px;
+  position: relative;
+}
+.portal-hero .hero-controls {
+  position: absolute;
+  top: 24px;
+  right: 0;
+  display: flex;
+  gap: var(--sp-sm);
+  align-items: center;
+}
+.portal-hero .theme-toggle,
+.portal-hero .storage-config-btn {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 8px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  transition: background-color 0.25s, color 0.25s;
+  color: var(--text);
+}
+.portal-hero .storage-config-btn:hover {
+  background: var(--surface-2);
+}
+.portal-hero h1 {
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: -0.8px;
+  margin-bottom: 12px;
+}
+.portal-hero h1 .highlight {
+  background: linear-gradient(135deg, var(--accent), var(--cyan));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.portal-hero p {
+  color: var(--text-dim);
+  font-size: 15px;
+  max-width: 540px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+.portal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--sp-lg);
+  padding: 0 0 80px;
+}
+.portal-grid > .env-section {
+  grid-column: 1 / -1;
+  margin-bottom: 0;
+}
+.portal-grid > .env-section .env-header {
+  cursor: pointer;
+}
+.portal-grid > .env-section .env-header:hover {
+  background: var(--surface-3) !important;
+}
+.portal-grid > .env-section .env-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--sp-lg);
+  padding: var(--sp-lg) 28px;
+}
+.portal-grid > .env-section.collapsed .env-body {
+  display: none !important;
+}
+
+.portal-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-lg) var(--sp-lg) 20px;
+  text-decoration: none;
+  color: var(--text);
+  transition: border-color 0.25s, box-shadow 0.25s, transform 0.25s;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+.portal-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--cyan));
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+.portal-card:hover {
+  border-color: var(--border-bright);
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-2px);
+}
+.portal-card:hover::before { opacity: 1; }
+.portal-card .card-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-sm);
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  margin-bottom: var(--sp-md);
+  flex-shrink: 0;
+}
+.portal-card h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  text-transform: none;
+  letter-spacing: -0.2px;
+  color: var(--text);
+}
+.portal-card .card-desc {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  flex: 1;
+}
+.portal-card .card-tag {
+  display: inline-block;
+  margin-top: 16px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  padding: 4px 10px;
+  border-radius: var(--radius-xs);
+}
+.card-tag--active {
+  background: var(--green-dim);
+  color: var(--green);
+}
+.card-tag--soon {
+  background: rgba(136, 146, 168, 0.12);
+  color: var(--text-muted);
+}
+.portal-card--placeholder {
+  border-style: dashed;
+  cursor: default;
+}
+.portal-card--placeholder:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--border);
+}
+.portal-card--placeholder::before { display: none; }
+.portal-card--pending {
+  background: color-mix(in srgb, var(--red) 8%, var(--surface));
+  border-color: color-mix(in srgb, var(--red) 25%, var(--border));
+}
+.portal-card--pending .card-tag--active {
+  background: color-mix(in srgb, var(--orange) 15%, transparent);
+  color: var(--orange);
+}
+.portal-card--pending:hover {
+  border-color: color-mix(in srgb, var(--red) 50%, var(--border));
+}
+
+.portal-footer {
+  text-align: center;
+  padding: 0 0 36px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.portal-footer a {
+  color: var(--cyan);
+  text-decoration: none;
+  border-bottom: 1px dashed color-mix(in srgb, var(--cyan) 50%, transparent);
+}
+.portal-footer a:hover {
+  color: var(--accent);
+  border-bottom-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+/* Storage Account Config Modal */
+.storage-modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  animation: fadeIn 0.2s ease-out;
+}
+.storage-modal-overlay.open {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.storage-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-lg);
+  max-width: 500px;
+  width: 90%;
+  box-shadow: var(--shadow-card);
+  animation: slideUp 0.3s ease-out;
+}
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.storage-modal h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 var(--sp-md) 0;
+  color: var(--text);
+}
+.storage-modal .form-group {
+  margin-bottom: var(--sp-md);
+}
+.storage-modal label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.storage-modal input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font-mono);
+  box-sizing: border-box;
+  transition: border-color 0.25s;
+}
+.storage-modal input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface);
+}
+.storage-modal input::placeholder {
+  color: var(--text-muted);
+}
+.storage-modal .form-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.storage-modal .current-status {
+  padding: var(--sp-md);
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--sp-md);
+  font-size: 13px;
+  color: var(--text);
+}
+.storage-modal .current-status .status-label {
+  color: var(--green);
+  font-weight: 600;
+  display: block;
+  margin-bottom: 4px;
+}
+.storage-modal .current-status .status-detail {
+  color: var(--text-muted);
+  word-break: break-all;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.storage-modal-buttons {
+  display: flex;
+  gap: var(--sp-sm);
+  justify-content: flex-end;
+  margin-top: var(--sp-lg);
+}
+.storage-modal button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+}
+.storage-modal .btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+.storage-modal .btn-primary:hover {
+  background: color-mix(in srgb, var(--accent) 85%, black);
+  color: #fff;
+}
+.storage-modal .btn-secondary {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.storage-modal .btn-secondary:hover {
+  background: var(--surface);
+}
+.storage-modal .btn-danger {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+.storage-modal .btn-danger:hover {
+  background: rgba(239, 68, 68, 0.2);
+}
+.storage-modal .btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
