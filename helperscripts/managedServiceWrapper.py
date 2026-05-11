@@ -20,11 +20,11 @@ Scripts run (in order):
     4. get_virtualmachines.py
     5. get_containerApps.py
     6. get_appserviceplans.py
-    7. get_eventhubnamespaces.py
+    7. get_postgresql.py
+    8. get_eventhubnamespaces.py
 
 Extractor scripts are expected in the sibling `extractor/` folder.
-Output is written to <output-dir>/<CUSTOMER>_<YYYYMMDD_HHMM>/ so each run
-gets its own timestamped sub-folder.
+Output is written to <output-dir>/<CUSTOMER>/.
 
 Usage
 -----
@@ -32,7 +32,7 @@ Usage
     python managedServiceWrapper.py -c CUST -i ../customers/CUST.json --output-dir ../reports
     python managedServiceWrapper.py -c CUST --from 2026-02-01 --to 2026-04-20
     python managedServiceWrapper.py -c CUST --lookback PT6H
-    python managedServiceWrapper.py -c CUST --skip get_subscriptions get_daily_costs get_reserved_instances get_virtualmachines get_containerApps get_appserviceplans get_eventhubnamespaces
+    python managedServiceWrapper.py -c CUST --skip get_subscriptions get_daily_costs get_reserved_instances get_virtualmachines get_containerApps get_appserviceplans get_postgresql get_eventhubnamespaces
     python managedServiceWrapper.py -c CUST --skip-login
     python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-client-secret <secret>
     python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-certificate /path/to/cert.pem
@@ -599,14 +599,14 @@ examples:
     parser.add_argument(
         "--output-dir",
            default=None,
-        help="Root output directory. A sub-folder <CUSTOMER>_<timestamp> is created per run "
+        help="Root output directory. Files are written to sub-folder <CUSTOMER> "
                "(default: ../reports relative to this script).",
     )
     parser.add_argument(
         "--output-format",
         choices=("csv", "json", "both"),
-        default="both",
-        help="File output format for child extractors: csv, json, or both (default: both).",
+        default="csv",
+        help="File output format for child extractors: csv, json, or both (default: csv).",
     )
     parser.add_argument(
         "--storage-connection-string",
@@ -623,7 +623,7 @@ examples:
     parser.add_argument(
         "--storage-prefix",
         default=None,
-        help="Optional blob path prefix. Default: <CUSTOMER>_<timestamp>.",
+        help="Optional blob path prefix. Default: <CUSTOMER>.",
     )
     parser.add_argument(
         "--skip-login",
@@ -657,21 +657,21 @@ examples:
     parser.add_argument(
         "--from", dest="date_from", default=None,
            help="Start date YYYY-MM-DD (forwarded to get_daily_costs, "
-               "get_eventhubnamespaces, get_containerApps, get_appserviceplans). "
+               "get_eventhubnamespaces, get_containerApps, get_appserviceplans, get_postgresql). "
                "Default: first day of previous month.",
     )
     parser.add_argument(
         "--to", dest="date_to", default=None,
            help="End date YYYY-MM-DD (forwarded to get_daily_costs, "
-               "get_eventhubnamespaces, get_containerApps, get_appserviceplans). "
+               "get_eventhubnamespaces, get_containerApps, get_appserviceplans, get_postgresql). "
                "Default: today.",
     )
     parser.add_argument(
         "--lookback",
         default=None,
         help="Metrics lookback window: integer minutes or ISO-8601 duration like PT6H. "
-                         "Forwarded to get_eventhubnamespaces, get_containerApps, and get_appserviceplans. "
-               "Overrides the default date window for those two scripts when --from/--to are not set.",
+                         "Forwarded to get_eventhubnamespaces, get_containerApps, get_appserviceplans, and get_postgresql. "
+               "Overrides the default date window for those metrics scripts when --from/--to are not set.",
     )
 
     # ── Reserved Instances ────────────────────────────────────────────────────
@@ -689,7 +689,7 @@ examples:
         default=[],
         help="One or more script names to skip (without .py extension). "
                "Choices: get_subscriptions  get_daily_costs  get_reserved_instances  "
-               "get_virtualmachines  get_containerApps  get_appserviceplans  get_eventhubnamespaces",
+               "get_virtualmachines  get_containerApps  get_appserviceplans  get_postgresql  get_eventhubnamespaces",
     )
     parser.add_argument(
         "--only",
@@ -712,9 +712,8 @@ def main() -> None:
     customer_csv_path = resolve_customer_csv(customer, args.input)
     output_root = Path(args.output_dir) if args.output_dir else (SCRIPT_DIR.parent / "reports")
 
-    # ── Timestamped output directory ──────────────────────────────────────────
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
-    out_dir = output_root / f"{customer}_{timestamp}"
+    # ── Stable output directory per customer ─────────────────────────────────
+    out_dir = output_root / customer
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Tee stdout + stderr to a log file ─────────────────────────────────────
@@ -796,6 +795,7 @@ def main() -> None:
         ("get_virtualmachines",    "Virtual Machines",      lookback_args if lookback_args else date_args),
         ("get_containerApps",      "Container Apps",        lookback_args if lookback_args else date_args),
         ("get_appserviceplans",    "App Service Plans",     lookback_args if lookback_args else date_args),
+        ("get_postgresql",         "PostgreSQL",            lookback_args if lookback_args else date_args),
         ("get_eventhubnamespaces", "Event Hub Namespaces",  lookback_args if lookback_args else date_args),
     ]
 

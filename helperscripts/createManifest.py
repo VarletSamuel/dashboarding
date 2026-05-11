@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 KNOWN_DASHBOARDS: Dict[str, Tuple[str, str]] = {
 	"app_service_plans": ("appServicePlans", "App Service Plans"),
 	"container_apps": ("containerApps", "Container Apps"),
+	"postgresql": ("postgresql", "PostgreSQL"),
 	"virtual_machines": ("virtualMachines", "Virtual Machines"),
 	"eventhub": ("eventhubs", "EventHub"),
 	"eventhubs": ("eventhubs", "EventHub"),
@@ -39,6 +40,7 @@ TYPE_SORT_ORDER = {
 DASHBOARD_ORDER = [
 	"appServicePlans",
 	"containerApps",
+	"postgresql",
 	"virtualMachines",
 	"eventhubs",
 	"azureCosts",
