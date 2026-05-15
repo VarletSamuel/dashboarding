@@ -4,12 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Azure Reserved Instances — RI Advisor Dashboard</title>
-<link rel="icon" type="image/png" href="../bin/delaware-dee-rgb.png">
+<link rel="icon" type="image/png" href="../assets/delaware-dee-rgb.png">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../bin/dashboard-core.css">
-<link rel="stylesheet" href="../bin/dashboard-reservedInstances.css">
-<script src="../bin/storage-loader.js"></script>
-<script src="../bin/filter-bar-helper.js"></script>
+<link rel="stylesheet" href="../assets/dashboard-core.css">
+<link rel="stylesheet" href="../assets/dashboard-reservedInstances.css">
+<script src="../assets/storage-loader.js"></script>
+<script src="../assets/filter-bar-helper.js"></script>
 <script>
 // ── Theme: apply before paint to prevent flash ──
 (function(){
@@ -27,7 +27,7 @@
   <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode">
     <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
   </button>
-  <img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:44px">
+  <img src="../assets/delaware-dee-rgb.png" alt="delaware" style="height:44px">
   <h1>Reserved Instance Advisor</h1>
   <p>Upload the <strong>reservedInstances.csv</strong> exported from your Azure portal (Cost Management → Reservations). The file is parsed entirely in your browser — nothing is uploaded to any server.</p>
   <div id="upload-zone" class="drop-zone">
@@ -48,7 +48,7 @@
 <div id="dashboardScreen">
   <div class="topbar">
     <h1>
-      <img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle">
+      <img src="../assets/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle">
       <span id="dashTitle">Reserved Instance Advisor</span>
     </h1>
     <div style="display:flex;align-items:center;gap:8px">
@@ -212,9 +212,9 @@ function applyFilters() {
 // ══════════════════════════════════════════════════════════════════════════
 // FILTER BAR UI
 // ══════════════════════════════════════════════════════════════════════════
-// buildFilterBar and onFilterCheck moved to bin/filter-bar-helper.js
+// buildFilterBar and onFilterCheck moved to assets/filter-bar-helper.js
 
-// onFilterCheck moved to bin/filter-bar-helper.js
+// onFilterCheck moved to assets/filter-bar-helper.js
 
 // ══════════════════════════════════════════════════════════════════════════
 // AGGREGATION
@@ -645,7 +645,7 @@ async function autoLoadFromStorage() {
 
 document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
 </script>
-<script src="../bin/table-sort.js"></script>
+<script src="../assets/table-sort.js"></script>
 </body>
 </html>
 

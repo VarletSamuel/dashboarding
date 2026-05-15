@@ -4,15 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Azure Cost Dashboard</title>
-<link rel="icon" type="image/png" href="../bin/delaware-dee-rgb.png">
+<link rel="icon" type="image/png" href="../assets/delaware-dee-rgb.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../bin/dashboard-core.css">
-<link rel="stylesheet" href="../bin/dashboard-azureCosts.css">
-<script src="../bin/storage-loader.js"></script>
-<script src="../bin/filter-bar-helper.js"></script>
+<link rel="stylesheet" href="../assets/dashboard-core.css">
+<link rel="stylesheet" href="../assets/dashboard-azureCosts.css">
+<script src="../assets/storage-loader.js"></script>
+<script src="../assets/filter-bar-helper.js"></script>
 <script>
 (function(){
   const saved = localStorage.getItem('dco-theme');
@@ -71,7 +71,7 @@
 <!-- DASHBOARD -->
 <div id="dashboardScreen">
   <div class="topbar">
-    <h1><img src="../bin/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle"><span id="dashTitle">Azure Cost Dashboard</span></h1>
+    <h1><img src="../assets/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle"><span id="dashTitle">Azure Cost Dashboard</span></h1>
     <div style="display:flex;align-items:center;gap:8px">
       <button class="meta fx-rate-btn" id="fxRate" title="Click to see 30-day USD → EUR history"></button>
       <span class="meta" style="opacity:0.35">|</span>
@@ -1418,7 +1418,7 @@ async function autoLoadFromStorage() {
 
 document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
 </script>
-<script src="../bin/table-sort.js"></script>
+<script src="../assets/table-sort.js"></script>
 </body>
 </html>
 
