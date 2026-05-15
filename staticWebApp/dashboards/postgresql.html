@@ -321,20 +321,36 @@ function aggregate(summaryRows, tsRows) {
 }
 
 function sparkSVG(series, pick, color) {
-  const values = (series || []).map(pick).filter(v => v != null);
-  if (values.length < 2) return '<svg viewBox="0 0 100 36"></svg>';
-  const w = 100;
-  const h = 36;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  const vals = (series || []).map(pick).filter(v => v != null);
+  if (vals.length < 2) return '<svg viewBox="0 0 100 36"></svg>';
+  const max = Math.max(...vals) || 1;
+  const min = Math.min(...vals);
   const range = max - min || 1;
-  const points = values.map((value, idx) => {
-    const x = (idx / (values.length - 1)) * w;
-    const y = h - (((value - min) / range) * (h - 4) + 2);
+  const w = 100, h = 36, pad = 2;
+  const points = vals.map((v, i) => {
+    const x = (i / (vals.length - 1)) * w;
+    const y = pad + ((1 - (v - min) / range) * (h - pad * 2));
     return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  const area = `0,${h} ${points} ${w},${h}`;
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polygon points="${area}" fill="${color}" opacity="0.18"></polygon><polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>`;
+  });
+  const polyline = points.join(' ');
+  const areaPoints = `0,${h} ${polyline} ${w},${h}`;
+  
+  // Extract date range from series timestamps
+  let dateRangeTitle = '';
+  if (series && series.length > 0) {
+    const timestamps = series.filter(s => s.timestamp).map(s => new Date(s.timestamp));
+    if (timestamps.length > 1) {
+      const minDate = timestamps.reduce((a, b) => a < b ? a : b).toISOString().split('T')[0];
+      const maxDate = timestamps.reduce((a, b) => a > b ? a : b).toISOString().split('T')[0];
+      dateRangeTitle = minDate === maxDate ? minDate : `${minDate} to ${maxDate}`;
+    }
+  }
+  
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" title="${h(dateRangeTitle)}" style="cursor:pointer">
+    <title>${h(dateRangeTitle)}</title>
+    <polygon points="${areaPoints}" fill="${color}" opacity="0.12"/>
+    <polyline points="${polyline}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
 }
 
 function buildPortalLink(server) {

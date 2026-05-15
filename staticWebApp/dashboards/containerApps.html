@@ -477,7 +477,20 @@ function sparkSVG(series, color) {
   });
   const polyline = points.join(' ');
   const areaPoints = `0,${h} ${polyline} ${w},${h}`;
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+  
+  // Extract date range from series timestamps
+  let dateRangeTitle = '';
+  if (series && series.length > 0) {
+    const timestamps = series.filter(s => s.timestamp).map(s => new Date(s.timestamp));
+    if (timestamps.length > 1) {
+      const minDate = timestamps.reduce((a, b) => a < b ? a : b).toISOString().split('T')[0];
+      const maxDate = timestamps.reduce((a, b) => a > b ? a : b).toISOString().split('T')[0];
+      dateRangeTitle = minDate === maxDate ? minDate : `${minDate} to ${maxDate}`;
+    }
+  }
+  
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" title="${dateRangeTitle}" style="cursor:pointer">
+    <title>${dateRangeTitle}</title>
     <polygon points="${areaPoints}" fill="${color}" opacity="0.12"/>
     <polyline points="${polyline}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>`;
