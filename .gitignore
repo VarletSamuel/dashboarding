@@ -1,8 +1,11 @@
 # Secrets
 .env
 *.local
+docs
 
 # Sensitive customer files
+infra
+containerApp
 commands.ps1
 customers/
 extractor/__pycache__/
