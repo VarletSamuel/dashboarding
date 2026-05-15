@@ -22,6 +22,7 @@
 </head>
 <body class="ambient-glow">
 
+
 <div class="dash-container">
   <div class="portal-hero">
     <div class="hero-controls">
@@ -31,11 +32,42 @@
       <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode">
         <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
       </button>
+        <button class="admin-panel-btn" id="adminPanelBtn" style="display:none" title="Open Admin Panel">
+          🛠️ Admin
+        </button>
     </div>
     <img src="bin/delaware-dee-rgb.png" alt="delaware" style="height:48px;margin-bottom:12px">
     <h1>delaware <span class="highlight">Pro-Active Managed Services</span></h1>
     <p>Your central hub for Azure insights. Upload exports, explore dashboards, and stay ahead of cost, compliance, security, and health across your cloud estate.</p>
   </div>
+<!-- Admin Panel Modal -->
+<div class="admin-modal-overlay" id="adminModalOverlay">
+  <div class="admin-modal">
+    <h3>User-Customer Access Management</h3>
+    <div class="admin-modal-body">
+      <table id="adminUserTable" class="admin-table">
+        <thead>
+          <tr><th>User OID/UPN</th><th>Customers</th><th>Role</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+          <!-- Populated dynamically -->
+        </tbody>
+      </table>
+      <form id="adminAddUserForm" class="admin-form">
+        <input type="text" id="adminUserInput" placeholder="User OID or UPN" required>
+        <input type="text" id="adminCustomersInput" placeholder="Customers (comma separated)" required>
+        <select id="adminRoleInput">
+          <option value="viewer">viewer</option>
+          <option value="admin">admin</option>
+        </select>
+        <button type="submit">Add / Update</button>
+      </form>
+    </div>
+    <div class="admin-modal-buttons">
+      <button class="btn-secondary" id="closeAdminModalBtn">Close</button>
+    </div>
+  </div>
+</div>
 
   <div class="portal-grid" id="portalGrid"></div>
 
@@ -76,6 +108,101 @@
 </div>
 
 <script>
+// ══════════════════════════════════════════════════════════════
+
+// AUTH & ROLE PLACEHOLDER (replace with real Entra ID integration)
+// ══════════════════════════════════════════════════════════════
+// Simulate a logged-in user (replace with real Entra ID claims)
+const CURRENT_USER = {
+  oid: 'demo-user-oid', // unique object id
+  upn: 'user@example.com',
+  role: 'admin', // 'admin' or 'viewer'
+};
+
+// Simulate a mini user-customer DB (replace with backend or storage)
+let USER_CUSTOMER_DB = [
+  { oid: 'demo-user-oid', upn: 'user@example.com', customers: ['ARTC', 'DATS'], role: 'admin' },
+  { oid: 'viewer-oid', upn: 'viewer@contoso.com', customers: ['DLWR'], role: 'viewer' },
+];
+
+function getCurrentUserRole() {
+  // In real app, extract from Entra ID claims or backend
+  const user = USER_CUSTOMER_DB.find(u => u.oid === CURRENT_USER.oid || u.upn === CURRENT_USER.upn);
+  return user ? user.role : 'viewer';
+}
+
+function showAdminPanelButtonIfAllowed() {
+  const btn = document.getElementById('adminPanelBtn');
+  if (getCurrentUserRole() === 'admin') {
+    btn.style.display = 'inline-block';
+  } else {
+    btn.style.display = 'none';
+  }
+}
+// ══════════════════════════════════════════════════════════════
+// ADMIN PANEL UI
+// ══════════════════════════════════════════════════════════════
+function openAdminModal() {
+  document.getElementById('adminModalOverlay').classList.add('open');
+  renderAdminUserTable();
+}
+
+function closeAdminModal() {
+  document.getElementById('adminModalOverlay').classList.remove('open');
+}
+
+function renderAdminUserTable() {
+  const tbody = document.getElementById('adminUserTable').querySelector('tbody');
+  tbody.innerHTML = '';
+  USER_CUSTOMER_DB.forEach((u, idx) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${u.oid || u.upn}</td>
+      <td>${u.customers.join(', ')}</td>
+      <td>${u.role}</td>
+      <td><button data-idx="${idx}" class="admin-delete-btn">Delete</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+  // Attach delete handlers
+  tbody.querySelectorAll('.admin-delete-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      const idx = parseInt(this.getAttribute('data-idx'));
+      USER_CUSTOMER_DB.splice(idx, 1);
+      renderAdminUserTable();
+    });
+  });
+}
+
+function setupAdminPanelUi() {
+  const btn = document.getElementById('adminPanelBtn');
+  const modal = document.getElementById('adminModalOverlay');
+  const closeBtn = document.getElementById('closeAdminModalBtn');
+  const form = document.getElementById('adminAddUserForm');
+
+  btn.addEventListener('click', openAdminModal);
+  closeBtn.addEventListener('click', closeAdminModal);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) closeAdminModal();
+  });
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+    const userVal = document.getElementById('adminUserInput').value.trim();
+    const customersVal = document.getElementById('adminCustomersInput').value.trim();
+    const roleVal = document.getElementById('adminRoleInput').value;
+    if (!userVal || !customersVal) return;
+    // Try to update existing, else add new
+    let user = USER_CUSTOMER_DB.find(u => u.oid === userVal || u.upn === userVal);
+    if (user) {
+      user.customers = customersVal.split(',').map(s => s.trim()).filter(Boolean);
+      user.role = roleVal;
+    } else {
+      USER_CUSTOMER_DB.push({ oid: userVal, upn: userVal, customers: customersVal.split(',').map(s => s.trim()).filter(Boolean), role: roleVal });
+    }
+    renderAdminUserTable();
+    form.reset();
+  });
+}
 // ══════════════════════════════════════════════════════════════
 // DASHBOARD REGISTRY — add new dashboards here
 // ══════════════════════════════════════════════════════════════
@@ -723,7 +850,11 @@ class AzureStorageClient {
 }
 
 // Initialize on page load
-document.addEventListener('DOMContentLoaded', initStorageConfig);
+document.addEventListener('DOMContentLoaded', () => {
+  initStorageConfig();
+  showAdminPanelButtonIfAllowed();
+  setupAdminPanelUi();
+});
 
 // ══════════════════════════════════════════════════════════════
 // THEME TOGGLE
@@ -735,5 +866,80 @@ document.getElementById('themeToggle').addEventListener('click', () => {
   localStorage.setItem('dco-theme', next);
 });
 </script>
+<style>
+
+</style>
+<style>
+.admin-panel-btn {
+  margin-left: 8px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: none;
+  background: var(--accent-dim, #eee);
+  color: var(--accent, #333);
+  font-weight: 600;
+  cursor: pointer;
+}
+.admin-modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.25);
+  z-index: 1000;
+  display: none;
+}
+.admin-modal-overlay.open {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.admin-modal {
+  background: #fff;
+  color: #222;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  padding: 32px 24px 16px 24px;
+  min-width: 420px;
+  max-width: 90vw;
+}
+.admin-modal h3 {
+  margin-top: 0;
+}
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 16px;
+}
+.admin-table th, .admin-table td {
+  border: 1px solid #eee;
+  padding: 6px 10px;
+  text-align: left;
+}
+.admin-table th {
+  background: #f7f7f7;
+}
+.admin-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.admin-form input, .admin-form select {
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+}
+.admin-form button {
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: none;
+  background: var(--accent-dim, #eee);
+  color: var(--accent, #333);
+  font-weight: 600;
+  cursor: pointer;
+}
+.admin-modal-buttons {
+  text-align: right;
+  margin-top: 8px;
+}
+</style>
 </body>
 </html>
