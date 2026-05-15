@@ -14,6 +14,7 @@ What this collects
 - Hosted workload mix: web apps, Function Apps, Logic Apps Standard
 - App posture hints: running/stopped state, HTTPS-only, Always On, runtime stack
 - Plan metrics: CPU %, Memory %, HTTP queue, Disk queue, bytes in/out
+- Plan metrics: CPU %, Memory %, instance count, HTTP queue, Disk queue, bytes in/out
 - Derived cost signals: empty plan, stopped-only plan, likely scale-in candidate,
   likely oversized premium plan, or scale-up review candidate
 
@@ -128,6 +129,8 @@ SUMMARY_COLUMNS = [
     "cost_signal_category",
     "cost_signal_reason",
     "observed_sample_count",
+    "observed_instance_avg_window",
+    "observed_instance_peak_window",
     "cpu_avg_pct_window",
     "cpu_p95_pct_window",
     "cpu_peak_pct_window",
@@ -146,6 +149,7 @@ SUMMARY_COLUMNS = [
 TIMESERIES_COLUMNS = [
     "plan_id",
     "timestamp",
+    "instance_count",
     "cpu_percentage",
     "memory_percentage",
     "http_queue_length",
@@ -156,6 +160,7 @@ TIMESERIES_COLUMNS = [
 
 
 PLAN_METRICS = [
+    {"azure_name": "InstanceCount", "column": "instance_count", "aggregation": "Average"},
     {"azure_name": "CpuPercentage", "column": "cpu_percentage", "aggregation": "Average"},
     {"azure_name": "MemoryPercentage", "column": "memory_percentage", "aggregation": "Average"},
     {"azure_name": "HttpQueueLength", "column": "http_queue_length", "aggregation": "Average"},
@@ -707,6 +712,8 @@ def process_subscription(
             "cost_signal_category": cost_signal_category,
             "cost_signal_reason": cost_signal_reason,
             "observed_sample_count": max((summary["samples"] for summary in metric_summaries.values()), default=0),
+            "observed_instance_avg_window": metric_summaries["instance_count"]["avg"],
+            "observed_instance_peak_window": metric_summaries["instance_count"]["peak"],
             "cpu_avg_pct_window": metric_summaries["cpu_percentage"]["avg"],
             "cpu_p95_pct_window": metric_summaries["cpu_percentage"]["p95"],
             "cpu_peak_pct_window": metric_summaries["cpu_percentage"]["peak"],
@@ -736,6 +743,7 @@ def process_subscription(
             ts_row = {
                 "plan_id": plan_id,
                 "timestamp": ts,
+                "instance_count": values.get("instance_count"),
                 "cpu_percentage": values.get("cpu_percentage"),
                 "memory_percentage": values.get("memory_percentage"),
                 "http_queue_length": values.get("http_queue_length"),

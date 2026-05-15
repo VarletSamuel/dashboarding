@@ -555,6 +555,10 @@ function isSummaryFile(name)    { return /app_service_plans_summary/i.test(name)
 function isTimeseriesFile(name) { return /app_service_plans_timeseries/i.test(name); }
 function isLegacyFile(name)     { return /app_service_plans/i.test(name) && !isSummaryFile(name) && !isTimeseriesFile(name); }
 
+function showFileUploadUI() {
+  document.getElementById('uploadScreen').style.display = 'flex';
+}
+
 function tryShowDashboard() {
   if (!SUMMARY_ROWS.length && !TS_ROWS.length) return;
   FILTER_OPTIONS = extractFilterOptions(SUMMARY_ROWS, TS_ROWS);
