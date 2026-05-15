@@ -18,7 +18,7 @@ on:
 
 jobs:
   build_and_deploy_job:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    if: github.event_name != 'pull_request' || github.event.action != 'closed'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -61,7 +61,9 @@ jobs:
           skip_api_build: true
 
       - name: Deploy via SWA CLI (fallback / cross-check)
+        id: fallback_deploy
         if: steps.deploy_action.outcome == 'failure'
+        continue-on-error: true
         env:
           SWA_CLI_DEPLOYMENT_TOKEN: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
         run: |
@@ -70,7 +72,7 @@ jobs:
           swa deploy ./staticWebApp --env production --verbose=silly
 
       - name: Fail the job if both attempts failed
-        if: steps.deploy_action.outcome == 'failure'
+        if: steps.deploy_action.outcome == 'failure' && steps.fallback_deploy.outcome == 'failure'
         run: |
           echo "Primary action failed. Check the SWA CLI step above for the HTTP-level error."
           exit 1
