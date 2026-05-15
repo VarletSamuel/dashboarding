@@ -346,8 +346,8 @@ function sparkSVG(series, pick, color) {
     }
   }
   
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" title="${h(dateRangeTitle)}" style="cursor:pointer">
-    <title>${h(dateRangeTitle)}</title>
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" title="${dateRangeTitle}" style="cursor:pointer">
+    <title>${dateRangeTitle}</title>
     <polygon points="${areaPoints}" fill="${color}" opacity="0.12"/>
     <polyline points="${polyline}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>`;
