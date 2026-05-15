@@ -2,7 +2,6 @@ name: Azure Static Web Apps CI/CD
 
 on:
   workflow_dispatch:
-    # Allows manual trigger from GitHub Actions UI
   push:
     branches:
       - main
@@ -28,7 +27,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy to Azure Static Web Apps
+      - name: Debug token without leaking it
+        env:
+          TOKEN: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+        run: |
+          echo "Length:           ${#TOKEN}"
+          echo "Trimmed length:   $(echo -n "$TOKEN" | tr -d '[:space:]' | wc -c)"
+          echo "Has whitespace:   $(echo -n "$TOKEN" | grep -cE '[[:space:]]')"
+          echo "MD5:              $(echo -n "$TOKEN" | md5sum | cut -d' ' -f1)"
+          echo "First byte (hex):"
+          echo -n "$TOKEN" | head -c1 | xxd
+          echo "Last byte (hex):"
+          echo -n "$TOKEN" | tail -c1 | xxd
+
+      - name: List files that will be deployed
+        run: |
+          echo "Contents of staticWebApp/:"
+          ls -la staticWebApp/ || echo "ERROR: staticWebApp directory not found"
+          echo ""
+          echo "File count: $(find staticWebApp -type f | wc -l)"
+
+      - name: Deploy to Azure Static Web Apps (primary)
+        id: deploy_action
+        continue-on-error: true
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
@@ -38,6 +59,21 @@ jobs:
           output_location: ""
           skip_app_build: true
           skip_api_build: true
+
+      - name: Deploy via SWA CLI (fallback / cross-check)
+        if: steps.deploy_action.outcome == 'failure'
+        env:
+          SWA_CLI_DEPLOYMENT_TOKEN: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+        run: |
+          npm install -g @azure/static-web-apps-cli
+          swa --version
+          swa deploy ./staticWebApp --env production --verbose=silly
+
+      - name: Fail the job if both attempts failed
+        if: steps.deploy_action.outcome == 'failure'
+        run: |
+          echo "Primary action failed. Check the SWA CLI step above for the HTTP-level error."
+          exit 1
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
