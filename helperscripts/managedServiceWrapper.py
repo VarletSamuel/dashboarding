@@ -20,8 +20,11 @@ Scripts run (in order):
     4. get_virtualmachines.py
     5. get_containerApps.py
     6. get_appserviceplans.py
-    7. get_postgresql.py
-    8. get_eventhubnamespaces.py
+    7. get_storage_accounts.py
+    8. get_keyvaults.py
+    9. check_app_secrets_expiry.py
+    10. get_postgresql.py
+    11. get_eventhubnamespaces.py
 
 Extractor scripts are expected in the sibling `extractor/` folder.
 Output is written to <output-dir>/<CUSTOMER>/.
@@ -32,7 +35,7 @@ Usage
     python managedServiceWrapper.py -c CUST -i ../customers/CUST.json --output-dir ../reports
     python managedServiceWrapper.py -c CUST --from 2026-02-01 --to 2026-04-20
     python managedServiceWrapper.py -c CUST --lookback PT6H
-    python managedServiceWrapper.py -c CUST --skip get_subscriptions get_daily_costs get_reserved_instances get_virtualmachines get_containerApps get_appserviceplans get_postgresql get_eventhubnamespaces
+    python managedServiceWrapper.py -c CUST --skip get_subscriptions get_daily_costs get_reserved_instances get_virtualmachines get_containerApps get_appserviceplans get_storage_accounts get_keyvaults check_app_secrets_expiry get_postgresql get_eventhubnamespaces
     python managedServiceWrapper.py -c CUST --skip-login
     python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-client-secret <secret>
     python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-certificate /path/to/cert.pem
@@ -410,7 +413,7 @@ def _get_manifest_builder():
         "createManifest", SCRIPT_DIR / "createManifest.py"
     )
     if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot locate helperscripts/createManifest.py at {helpers_dir}")
+        raise ImportError(f"Cannot locate helperscripts/createManifest.py at {SCRIPT_DIR}")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # type: ignore[union-attr]
     return mod.build_manifest, mod.load_existing_manifest
@@ -690,7 +693,7 @@ examples:
         help="One or more script names to skip (without .py extension). "
                "Choices: get_subscriptions  get_daily_costs  get_reserved_instances  "
                "get_virtualmachines  get_containerApps  get_appserviceplans  get_storage_accounts  "
-               "get_postgresql  get_eventhubnamespaces",
+               "get_keyvaults  check_app_secrets_expiry  get_postgresql  get_eventhubnamespaces",
     )
     parser.add_argument(
         "--only",
@@ -797,6 +800,8 @@ def main() -> None:
         ("get_containerApps",      "Container Apps",        lookback_args if lookback_args else date_args),
         ("get_appserviceplans",    "App Service Plans",     lookback_args if lookback_args else date_args),
         ("get_storage_accounts",   "Storage Accounts",      []),
+        ("get_keyvaults",          "Key Vaults",            []),
+        ("check_app_secrets_expiry","App Secret Expiry",     []),
         ("get_postgresql",         "PostgreSQL",            lookback_args if lookback_args else date_args),
         ("get_eventhubnamespaces", "Event Hub Namespaces",  lookback_args if lookback_args else date_args),
     ]
