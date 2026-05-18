@@ -689,7 +689,8 @@ examples:
         default=[],
         help="One or more script names to skip (without .py extension). "
                "Choices: get_subscriptions  get_daily_costs  get_reserved_instances  "
-               "get_virtualmachines  get_containerApps  get_appserviceplans  get_postgresql  get_eventhubnamespaces",
+               "get_virtualmachines  get_containerApps  get_appserviceplans  get_storage_accounts  "
+               "get_postgresql  get_eventhubnamespaces",
     )
     parser.add_argument(
         "--only",
@@ -795,6 +796,7 @@ def main() -> None:
         ("get_virtualmachines",    "Virtual Machines",      lookback_args if lookback_args else date_args),
         ("get_containerApps",      "Container Apps",        lookback_args if lookback_args else date_args),
         ("get_appserviceplans",    "App Service Plans",     lookback_args if lookback_args else date_args),
+        ("get_storage_accounts",   "Storage Accounts",      []),
         ("get_postgresql",         "PostgreSQL",            lookback_args if lookback_args else date_args),
         ("get_eventhubnamespaces", "Event Hub Namespaces",  lookback_args if lookback_args else date_args),
     ]
