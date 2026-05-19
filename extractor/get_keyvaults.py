@@ -38,6 +38,7 @@ import argparse
 import csv
 import json
 import os
+import requests
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -77,7 +78,37 @@ from azure.identity import (
 from azure.mgmt.keyvault import KeyVaultManagementClient
 from azure.mgmt.network import NetworkManagementClient
 
-# ── Argument parsing and main export skeleton ───────────────────────────────
+# ── Summary file: one row per key vault ─────────────────────────────────────
+SUMMARY_COLUMNS = [
+    "tenant_id",
+    "subscription_id",
+    "subscription_name",
+    "resource_group",
+    "key_vault_name",
+    "key_vault_id",
+    "location",
+    "sku_name",
+    "vault_uri",
+    "create_mode",
+    "enable_rbac_authorization",
+    "enabled_for_deployment",
+    "enabled_for_disk_encryption",
+    "enabled_for_template_deployment",
+    "soft_delete_enabled",
+    "purge_protection_enabled",
+    "public_network_access",
+    "default_action",
+    "bypass_rules",
+    "private_endpoint_count",
+    "private_endpoint_names",
+    "tags",
+    "quality_score",
+    "security_score",
+    "compliance_score",
+    "recommendations",
+]
+
+
 def parse_date(value: str) -> datetime:
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"):
         try:
@@ -145,6 +176,327 @@ def get_credential(
         chain_candidates.append(AzureCliCredential())
     return ChainedTokenCredential(*chain_candidates)
 
+
+def get_token(credential) -> str:
+    return credential.get_token("https://management.azure.com/.default").token
+
+
+def list_enabled_subscriptions(credential) -> list[tuple[str, str, str]]:
+    token = get_token(credential)
+    headers = {"Authorization": f"Bearer {token}"}
+    url = "https://management.azure.com/subscriptions?api-version=2022-12-01"
+    subscriptions: list[tuple[str, str, str]] = []
+
+    while url:
+        response = requests.get(url, headers=headers, timeout=120)
+        response.raise_for_status()
+        payload = response.json()
+        for sub in payload.get("value", []):
+            state = str(sub.get("state") or "")
+            if state.lower().endswith("enabled"):
+                subscriptions.append(
+                    (
+                        str(sub.get("subscriptionId") or ""),
+                        str(sub.get("displayName") or sub.get("subscriptionId") or ""),
+                        str(sub.get("tenantId") or ""),
+                    )
+                )
+        url = payload.get("nextLink")
+
+    return subscriptions
+
+
+def fmt(value):
+    if value is None:
+        return ""
+    if hasattr(value, "value"):
+        return str(value.value)
+    return str(value)
+
+
+def parse_resource_group(resource_id: str) -> str:
+    if not resource_id or "/resourceGroups/" not in resource_id:
+        return ""
+    return resource_id.split("/resourceGroups/")[1].split("/")[0]
+
+
+def tags_str(tags: dict | None) -> str:
+    if not tags:
+        return ""
+    return ", ".join(f"{k}={v}" for k, v in sorted(tags.items()))
+
+
+def number_to_str(value, decimals: int = 2) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        rounded = round(value, decimals)
+        if rounded.is_integer():
+            return str(int(rounded))
+        return f"{rounded:.{decimals}f}"
+    return str(value)
+
+
+def get_private_endpoints(
+    network_client: NetworkManagementClient,
+    vault_id: str,
+    resource_group: str,
+) -> tuple[int, str]:
+    """Find private endpoints connected to this key vault."""
+    if not resource_group:
+        return 0, ""
+
+    try:
+        endpoints = network_client.private_endpoints.list(resource_group)
+        matched = []
+        for ep in endpoints:
+            for conn in (ep.private_link_service_connections or []):
+                service_id = getattr(conn, "private_link_service_id", "") or ""
+                if service_id.lower() == vault_id.lower():
+                    matched.append(fmt(ep.name))
+        return len(matched), " | ".join(matched)
+    except Exception as exc:
+        print(f"    ⚠  Could not list private endpoints for {resource_group}: {exc}")
+        return 0, ""
+
+
+def get_network_rule_summary(vault_properties) -> tuple[str, str]:
+    try:
+        rules = getattr(vault_properties, "network_acls", None)
+        if not rules:
+            return "Allow", ""
+
+        default_action = fmt(getattr(rules, "default_action", "Allow"))
+        bypasses = fmt(getattr(rules, "bypass", ""))
+        return default_action, bypasses
+    except Exception:
+        return "Allow", ""
+
+
+def calculate_security_score(vault_info: dict) -> float:
+    score = 0
+
+    if vault_info.get("soft_delete_enabled") == "True":
+        score += 20
+    if vault_info.get("purge_protection_enabled") == "True":
+        score += 20
+    if (vault_info.get("default_action") or "").lower() == "deny":
+        score += 15
+    if vault_info.get("private_endpoint_count", 0) and int(vault_info.get("private_endpoint_count", 0)) > 0:
+        score += 15
+    if vault_info.get("enable_rbac_authorization") == "True":
+        score += 10
+    if (vault_info.get("public_network_access") or "").lower() in ("disabled", "false"):
+        score += 20
+
+    return min(100, score)
+
+
+def calculate_compliance_score(vault_info: dict) -> float:
+    score = 0
+
+    if vault_info.get("soft_delete_enabled") == "True":
+        score += 25
+    if vault_info.get("purge_protection_enabled") == "True":
+        score += 25
+    if vault_info.get("enable_rbac_authorization") == "True":
+        score += 15
+    if vault_info.get("enabled_for_template_deployment") == "True":
+        score += 10
+    if vault_info.get("tags"):
+        score += 10
+    if (vault_info.get("default_action") or "").lower() == "deny":
+        score += 15
+
+    return min(100, score)
+
+
+def generate_recommendations(vault_info: dict) -> list[str]:
+    recommendations = []
+
+    if vault_info.get("soft_delete_enabled") != "True":
+        recommendations.append("Enable soft delete for secret/certificate recovery")
+    if vault_info.get("purge_protection_enabled") != "True":
+        recommendations.append("Enable purge protection to prevent permanent deletion")
+    if (vault_info.get("default_action") or "").lower() != "deny":
+        recommendations.append("Restrict network access with firewall default deny")
+    if (vault_info.get("private_endpoint_count", 0) or 0) == 0:
+        recommendations.append("Consider private endpoints for private network isolation")
+    if vault_info.get("enable_rbac_authorization") != "True":
+        recommendations.append("Use RBAC authorization instead of legacy access policies")
+
+    return recommendations
+
+
+def build_vault_summary(
+    vault,
+    tenant_id: str,
+    sub_id: str,
+    sub_name: str,
+    resource_group: str,
+    network_client: NetworkManagementClient,
+) -> dict:
+    vault_id = fmt(vault.id)
+    properties = getattr(vault, "properties", None)
+    sku = getattr(vault, "sku", None)
+
+    default_action, bypass_rules = get_network_rule_summary(properties)
+    private_ep_count, private_ep_names = get_private_endpoints(network_client, vault_id, resource_group)
+
+    vault_info = {
+        "tenant_id": tenant_id or "",
+        "subscription_id": sub_id,
+        "subscription_name": sub_name or "",
+        "resource_group": resource_group,
+        "key_vault_name": fmt(vault.name),
+        "key_vault_id": vault_id,
+        "location": fmt(vault.location),
+        "sku_name": fmt(getattr(sku, "name", "")),
+        "vault_uri": fmt(getattr(properties, "vault_uri", "")),
+        "create_mode": fmt(getattr(properties, "create_mode", "")),
+        "enable_rbac_authorization": fmt(getattr(properties, "enable_rbac_authorization", False)),
+        "enabled_for_deployment": fmt(getattr(properties, "enabled_for_deployment", False)),
+        "enabled_for_disk_encryption": fmt(getattr(properties, "enabled_for_disk_encryption", False)),
+        "enabled_for_template_deployment": fmt(getattr(properties, "enabled_for_template_deployment", False)),
+        "soft_delete_enabled": fmt(getattr(properties, "enable_soft_delete", getattr(properties, "soft_delete_enabled", False))),
+        "purge_protection_enabled": fmt(getattr(properties, "enable_purge_protection", getattr(properties, "purge_protection_enabled", False))),
+        "public_network_access": fmt(getattr(properties, "public_network_access", "")),
+        "default_action": default_action,
+        "bypass_rules": bypass_rules,
+        "private_endpoint_count": private_ep_count,
+        "private_endpoint_names": private_ep_names,
+        "tags": tags_str(getattr(vault, "tags", None)),
+    }
+
+    security_score = calculate_security_score(vault_info)
+    compliance_score = calculate_compliance_score(vault_info)
+    quality_score = (security_score + compliance_score) / 2
+    recommendations = generate_recommendations(vault_info)
+
+    vault_info["security_score"] = security_score
+    vault_info["compliance_score"] = compliance_score
+    vault_info["quality_score"] = quality_score
+    vault_info["recommendations"] = " | ".join(recommendations[:3])
+
+    return vault_info
+
+
+def process_subscription(
+    credential,
+    sub_id: str,
+    sub_name: str,
+    tenant_id: str,
+) -> list[dict]:
+    print(f"\n── Subscription: {sub_name or sub_id} ──")
+    kv_client = KeyVaultManagementClient(credential, sub_id)
+    network_client = NetworkManagementClient(credential, sub_id)
+    summary_rows: list[dict] = []
+
+    try:
+        vaults = list(kv_client.vaults.list())
+    except Exception as exc:
+        print(f"  ⚠  Could not list key vaults: {exc}")
+        return summary_rows
+
+    if not vaults:
+        print("  (no key vaults found)")
+        return summary_rows
+
+    print(f"  Found {len(vaults)} key vault(s)")
+
+    for vault in vaults:
+        resource_group = parse_resource_group(vault.id or "")
+        print(f"    • {fmt(vault.name)} ({resource_group})")
+
+        vault_summary = build_vault_summary(
+            vault,
+            tenant_id,
+            sub_id,
+            sub_name,
+            resource_group,
+            network_client,
+        )
+        summary_row = {key: number_to_str(vault_summary.get(key)) for key in SUMMARY_COLUMNS}
+        summary_rows.append(summary_row)
+
+    return summary_rows
+
+
+def export(args):
+    now = datetime.now(timezone.utc)
+    all_summary: list[dict] = []
+
+    if args.input:
+        tenant_map = read_customer_csv(args.input)
+        for tenant_id, subs in tenant_map.items():
+            try:
+                credential = get_credential(
+                    tenant_id,
+                    args.sp_client_id,
+                    args.sp_client_secret,
+                    args.sp_certificate,
+                )
+            except Exception as exc:
+                print(f"  Skipping tenant {tenant_id} (credential error: {exc})")
+                continue
+
+            for sub_id, sub_name in subs:
+                s = process_subscription(credential, sub_id, sub_name, tenant_id)
+                all_summary.extend(s)
+    elif args.subscription:
+        credential = get_credential(
+            None,
+            args.sp_client_id,
+            args.sp_client_secret,
+            args.sp_certificate,
+        )
+        s = process_subscription(credential, args.subscription, "", "")
+        all_summary.extend(s)
+    else:
+        credential = get_credential(None, args.sp_client_id, args.sp_client_secret, args.sp_certificate)
+        subs = list_enabled_subscriptions(credential)
+        print(f"Found {len(subs)} enabled subscription(s) via ARM SDK")
+        for sub_id, sub_name, tenant_id in subs:
+            s = process_subscription(credential, sub_id, sub_name, tenant_id)
+            all_summary.extend(s)
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    date_str = now.strftime("%Y%m%d_%H%M")
+
+    if args.input:
+        prefix = os.path.splitext(os.path.basename(args.input))[0].upper()
+        summary_filename = f"{prefix}_keyvaults_summary_{date_str}.csv"
+        summary_json_filename = f"{prefix}_keyvaults_summary_{date_str}.json"
+    else:
+        summary_filename = f"keyvaults_summary_{date_str}.csv"
+        summary_json_filename = f"keyvaults_summary_{date_str}.json"
+
+    summary_path = os.path.join(args.output_dir, summary_filename)
+    summary_json_path = os.path.join(args.output_dir, summary_json_filename)
+
+    if args.output_format in ("csv", "both"):
+        with open(summary_path, "w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=SUMMARY_COLUMNS, delimiter=";")
+            writer.writeheader()
+            writer.writerows(all_summary)
+
+    if args.output_format in ("json", "both"):
+        with open(summary_json_path, "w", encoding="utf-8") as handle:
+            json.dump(all_summary, handle, indent=2)
+
+    print(f"\n{'═' * 70}")
+    print(f"  ✅  Exported {len(all_summary)} key vault(s)")
+    if args.output_format in ("csv", "both"):
+        print(f"      → {summary_path}")
+    if args.output_format in ("json", "both"):
+        print(f"      → {summary_json_path}")
+    print(f"{'═' * 70}\n")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Export Azure Key Vaults with security, compliance, and quality checks.",
@@ -202,23 +554,7 @@ examples:
         help="Directory for the output files",
     )
     args = parser.parse_args()
-
-    now = datetime.now(timezone.utc)
-    date_str = now.strftime("%Y%m%d_%H%M")
-
-    if args.input:
-        prefix = os.path.splitext(os.path.basename(args.input))[0].upper()
-        summary_filename = f"{prefix}_keyvaults_summary_{date_str}.csv"
-        summary_json_filename = f"{prefix}_keyvaults_summary_{date_str}.json"
-    else:
-        summary_filename = f"keyvaults_summary_{date_str}.csv"
-        summary_json_filename = f"keyvaults_summary_{date_str}.json"
-
-    summary_path = os.path.join(args.output_dir, summary_filename)
-    summary_json_path = os.path.join(args.output_dir, summary_json_filename)
-
-    # [Vault discovery, property extraction, and export logic will be implemented here.]
-    print(f"[INFO] Would export to: {summary_path} and {summary_json_path}")
+    export(args)
 
 if __name__ == "__main__":
     main()
