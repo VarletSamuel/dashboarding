@@ -17,14 +17,15 @@ Scripts run (in order):
     1. get_subscriptions.py
     2. get_daily_costs.py
     3. get_reserved_instances.py
-    4. get_virtualmachines.py
-    5. get_containerApps.py
-    6. get_appserviceplans.py
-    7. get_storage_accounts.py
-    8. get_keyvaults.py
-    9. check_app_secrets_expiry.py
-    10. get_postgresql.py
-    11. get_eventhubnamespaces.py
+    4. get_reservations_commitments.py
+    5. get_virtualmachines.py
+    6. get_containerApps.py
+    7. get_appserviceplans.py
+    8. get_storage_accounts.py
+    9. get_keyvaults.py
+    10. check_app_secrets_expiry.py
+    11. get_postgresql.py
+    12. get_eventhubnamespaces.py
 
 Extractor scripts are expected in the sibling `extractor/` folder.
 Output is written to <output-dir>/<CUSTOMER>/.
@@ -35,7 +36,7 @@ Usage
     python managedServiceWrapper.py -c CUST -i ../customers/CUST.json --output-dir ../reports
     python managedServiceWrapper.py -c CUST --from 2026-02-01 --to 2026-04-20
     python managedServiceWrapper.py -c CUST --lookback PT6H
-    python managedServiceWrapper.py -c CUST --skip get_subscriptions get_daily_costs get_reserved_instances get_virtualmachines get_containerApps get_appserviceplans get_storage_accounts get_keyvaults check_app_secrets_expiry get_postgresql get_eventhubnamespaces
+    python managedServiceWrapper.py -c CUST --skip get_subscriptions get_daily_costs get_reserved_instances get_reservations_commitments get_virtualmachines get_containerApps get_appserviceplans get_storage_accounts get_keyvaults check_app_secrets_expiry get_postgresql get_eventhubnamespaces
     python managedServiceWrapper.py -c CUST --skip-login
     python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-client-secret <secret>
     python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-certificate /path/to/cert.pem
@@ -691,7 +692,7 @@ examples:
         metavar="SCRIPT",
         default=[],
         help="One or more script names to skip (without .py extension). "
-               "Choices: get_subscriptions  get_daily_costs  get_reserved_instances  "
+               "Choices: get_subscriptions  get_daily_costs  get_reserved_instances  get_reservations_commitments  "
                "get_virtualmachines  get_containerApps  get_appserviceplans  get_storage_accounts  "
                "get_keyvaults  check_app_secrets_expiry  get_postgresql  get_eventhubnamespaces",
     )
@@ -796,6 +797,7 @@ def main() -> None:
         ("get_subscriptions",      "Subscriptions",        []),
         ("get_daily_costs",        "Daily Costs",          date_args),
         ("get_reserved_instances", "Reserved Instances",    ri_extra),
+        ("get_reservations_commitments", "Reservations Commitments", []),
         ("get_virtualmachines",    "Virtual Machines",      lookback_args if lookback_args else date_args),
         ("get_containerApps",      "Container Apps",        lookback_args if lookback_args else date_args),
         ("get_appserviceplans",    "App Service Plans",     lookback_args if lookback_args else date_args),
