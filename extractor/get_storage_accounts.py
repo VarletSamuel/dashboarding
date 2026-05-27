@@ -86,6 +86,7 @@ SUMMARY_COLUMNS = [
     "subscription_id",
     "subscription_name",
     "resource_group",
+    "name",
     "storage_account_name",
     "storage_account_id",
     "location",
@@ -131,6 +132,14 @@ SUMMARY_COLUMNS = [
     "has_queues",
     "queue_count",
     "storage_used_gb",
+    "qc_https_only",
+    "qc_tls_12_or_higher",
+    "qc_no_public_blob_access",
+    "qc_shared_key_disabled",
+    "qc_network_restricted",
+    "qc_soft_delete_enabled",
+    "qc_infrastructure_encryption",
+    "qc_has_tags",
     "tags",
     "quality_score",
     "security_score",
@@ -161,6 +170,9 @@ def read_customer_csv(json_path: str) -> dict:
 
     tenant_map = defaultdict(list)
     for entry in data.get("azure", []):
+        status = str(entry.get("status") or "").strip().lower()
+        if status != "active":
+            continue
         tenant = (entry.get("tenant_id") or "").strip()
         sub_id = (entry.get("subscription_id") or "").strip()
         sub_name = (entry.get("subscription_name") or "").strip()
@@ -597,6 +609,7 @@ def build_account_summary(
         "subscription_id": sub_id,
         "subscription_name": sub_name or "",
         "resource_group": resource_group,
+        "name": account_name,
         "storage_account_name": account_name,
         "storage_account_id": account_id,
         "location": account_location,
@@ -644,6 +657,28 @@ def build_account_summary(
         "storage_used_gb": storage_used_gb,
         "tags": tags_str(getattr(properties, "tags", None)),
     }
+
+    def bool_str(value: bool) -> str:
+        return "True" if value else "False"
+
+    def truthy(value) -> bool:
+        return str(value).strip().lower() in {"true", "1", "yes", "enabled"}
+
+    soft_delete_days = 0
+    try:
+        soft_delete_days = int(account_info.get("blob_soft_delete_days") or 0)
+    except (TypeError, ValueError):
+        soft_delete_days = 0
+
+    min_tls = (account_info.get("minimum_tls_version") or "").strip().upper().replace("_", "")
+    account_info["qc_https_only"] = bool_str(truthy(account_info.get("https_only")))
+    account_info["qc_tls_12_or_higher"] = bool_str(min_tls in {"TLS12", "TLS13"})
+    account_info["qc_no_public_blob_access"] = bool_str(not truthy(account_info.get("public_network_access_enabled")))
+    account_info["qc_shared_key_disabled"] = bool_str(not truthy(account_info.get("shared_access_key_enabled")))
+    account_info["qc_network_restricted"] = bool_str((account_info.get("default_action") or "").strip().lower() == "deny")
+    account_info["qc_soft_delete_enabled"] = bool_str(soft_delete_days > 0)
+    account_info["qc_infrastructure_encryption"] = bool_str(truthy(account_info.get("infrastructure_encryption_enabled")))
+    account_info["qc_has_tags"] = bool_str(bool(account_info.get("tags")))
     
     # Calculate scores
     security_score = calculate_security_score(account_info)

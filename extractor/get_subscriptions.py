@@ -3,6 +3,7 @@
 Fetch all subscriptions visible in a tenant and include:
   - subscription status (state)
   - management group (direct parent, when available)
+	- overall security score (Defender for Cloud secure score percentage)
 
 Output:
   1 CSV file per run:
@@ -201,6 +202,86 @@ def fetch_management_group_mapping(token: str) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Security score resolution
+# ---------------------------------------------------------------------------
+def _to_float(value) -> float | None:
+	try:
+		return float(value)
+	except (TypeError, ValueError):
+		return None
+
+
+def _extract_secure_score_percent(payload: dict) -> float | None:
+	"""
+	Extract secure score percentage (0-100) from Microsoft.Security secureScores payload.
+	"""
+	items = payload.get("value", [])
+	if not items:
+		return None
+
+	entry = next((i for i in items if (i.get("name") or "").lower() == "ascscore"), items[0])
+	props = entry.get("properties", {})
+	if not isinstance(props, dict):
+		return None
+
+	score_obj = props.get("score")
+	if isinstance(score_obj, dict):
+		percentage = _to_float(score_obj.get("percentage"))
+		if percentage is not None:
+			return percentage
+
+		current = _to_float(score_obj.get("current"))
+		maximum = _to_float(score_obj.get("max"))
+		if maximum is None:
+			maximum = _to_float(score_obj.get("maximum"))
+		if current is not None and maximum and maximum > 0:
+			return (current / maximum) * 100.0
+		if current is not None and 0.0 <= current <= 1.0:
+			return current * 100.0
+
+	percentage = _to_float(props.get("percentage"))
+	if percentage is not None:
+		return percentage
+
+	current = _to_float(props.get("current"))
+	maximum = _to_float(props.get("max"))
+	if maximum is None:
+		maximum = _to_float(props.get("maximum"))
+	if current is not None and maximum and maximum > 0:
+		return (current / maximum) * 100.0
+
+	return None
+
+
+def fetch_security_score_mapping(token: str, subscription_ids: list[str]) -> dict[str, str]:
+	"""
+	Returns a mapping:
+	  {subscription_id -> secure_score_percent_as_string}
+
+	Missing access/provider registration issues are tolerated and returned as empty values.
+	"""
+	scores: dict[str, str] = {}
+
+	for sub_id in subscription_ids:
+		if not sub_id:
+			continue
+		url = (
+			f"https://management.azure.com/subscriptions/{sub_id}"
+			"/providers/Microsoft.Security/secureScores?api-version=2020-01-01"
+		)
+		try:
+			payload = arm_get_json(token, url)
+		except requests.HTTPError:
+			scores[sub_id] = ""
+			continue
+
+		score = _extract_secure_score_percent(payload)
+		scores[sub_id] = f"{score:.2f}" if score is not None else ""
+
+	return scores
+
+
+# ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
 def write_csv(path: Path, records: list[dict], fieldnames: list[str]):
@@ -281,6 +362,12 @@ def main():
 	print("Resolving management groups...")
 	mg_mapping = fetch_management_group_mapping(token)
 
+	print("Resolving overall security scores...")
+	security_score_mapping = fetch_security_score_mapping(
+		token,
+		[sub.get("subscription_id", "") for sub in subscriptions],
+	)
+
 	rows = []
 	for sub in subscriptions:
 		sub_id = sub["subscription_id"]
@@ -291,6 +378,7 @@ def main():
 				"subscription_name": sub["subscription_name"],
 				"subscription_status": sub["subscription_state"],
 				"management_group": mg_mapping.get(sub_id, ""),
+				"overall_security_score": security_score_mapping.get(sub_id, ""),
 			}
 		)
 
@@ -317,6 +405,7 @@ def main():
 				"subscription_name",
 				"subscription_status",
 				"management_group",
+				"overall_security_score",
 			],
 		)
 	if args.output_format in ("json", "both"):

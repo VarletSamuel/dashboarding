@@ -96,6 +96,8 @@ SUMMARY_COLUMNS = [
     "data_disk_count",
     "data_disk_total_size_gb",
     "nic_count",
+    "has_public_ip",
+    "public_ip_addresses",
     "availability_zone",
     "availability_set",
     "proximity_placement_group",
@@ -112,6 +114,9 @@ SUMMARY_COLUMNS = [
     "extensions",
     "power_state",
     "provisioning_state",
+    "backup_configured",
+    "backup_status",
+    "backup_last_run_utc",
     "tags",
     "cost_signal_category",
     "cost_signal_reason",
@@ -125,6 +130,7 @@ SUMMARY_COLUMNS = [
     "disk_write_total_bytes_window",
     "available_memory_avg_bytes_window",
     "available_memory_min_bytes_window",
+    "managed_by",
 ]
 
 # ── Timeseries file: one row per VM × timestamp ───────────────────────────────
@@ -195,6 +201,9 @@ def read_customer_csv(json_path: str) -> dict:
 
     tenant_map = defaultdict(list)
     for entry in data.get("azure", []):
+        status = str(entry.get("status") or "").strip().lower()
+        if status != "active":
+            continue
         tenant = (entry.get("tenant_id") or "").strip()
         sub_id = (entry.get("subscription_id") or "").strip()
         sub_name = (entry.get("subscription_name") or "").strip()
@@ -290,6 +299,144 @@ def parse_resource_group(resource_id: str) -> str:
     if not resource_id or "/resourceGroups/" not in resource_id:
         return ""
     return resource_id.split("/resourceGroups/")[1].split("/")[0]
+
+
+def parse_resource_name(resource_id: str) -> str:
+    if not resource_id:
+        return ""
+    return resource_id.rstrip("/").split("/")[-1]
+
+
+def arm_list(token: str, url: str) -> list[dict]:
+    headers = {"Authorization": f"Bearer {token}"}
+    items: list[dict] = []
+    next_url = url
+    while next_url:
+        response = requests.get(next_url, headers=headers, timeout=120)
+        response.raise_for_status()
+        payload = response.json()
+        items.extend(payload.get("value", []))
+        next_url = payload.get("nextLink")
+    return items
+
+
+def get_nic_public_ip_names(token: str, nic_id: str, cache: dict[str, list[str]]) -> list[str]:
+    if not nic_id:
+        return []
+    if nic_id in cache:
+        return cache[nic_id]
+
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://management.azure.com{nic_id}?api-version=2023-09-01"
+
+    try:
+        response = requests.get(url, headers=headers, timeout=120)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        print(f"    ⚠  Could not resolve NIC public IPs for {nic_id}: {exc}")
+        cache[nic_id] = []
+        return []
+
+    names: list[str] = []
+    ip_configs = ((payload.get("properties") or {}).get("ipConfigurations") or [])
+    for cfg in ip_configs:
+        public_ip = ((cfg.get("properties") or {}).get("publicIPAddress") or {})
+        public_ip_id = public_ip.get("id")
+        if public_ip_id:
+            names.append(parse_resource_name(public_ip_id))
+
+    deduped = sorted(set(n for n in names if n))
+    cache[nic_id] = deduped
+    return deduped
+
+
+def get_vm_public_ip_info(token: str, nic_refs: list, cache: dict[str, list[str]]) -> tuple[bool, str]:
+    names: list[str] = []
+    for nic_ref in nic_refs or []:
+        nic_id = fmt(getattr(nic_ref, "id", None))
+        if not nic_id:
+            continue
+        names.extend(get_nic_public_ip_names(token, nic_id, cache))
+
+    deduped = sorted(set(n for n in names if n))
+    return (len(deduped) > 0, ", ".join(deduped))
+
+
+def build_backup_index(token: str, subscription_id: str) -> dict[str, dict]:
+    backup_index: dict[str, dict] = {}
+    vaults_url = (
+        f"https://management.azure.com/subscriptions/{subscription_id}"
+        "/providers/Microsoft.RecoveryServices/vaults?api-version=2023-02-01"
+    )
+
+    try:
+        vaults = arm_list(token, vaults_url)
+    except Exception as exc:
+        print(f"  ⚠  Could not list Recovery Services vaults: {exc}")
+        return backup_index
+
+    if vaults:
+        print(f"  Found {len(vaults)} Recovery Services vault(s)")
+
+    for vault in vaults:
+        vault_id = str(vault.get("id") or "")
+        vault_name = str(vault.get("name") or "")
+        rg_name = parse_resource_group(vault_id)
+        if not vault_name or not rg_name:
+            continue
+
+        items_url = (
+            f"https://management.azure.com/subscriptions/{subscription_id}"
+            f"/resourceGroups/{rg_name}/providers/Microsoft.RecoveryServices/vaults/{vault_name}"
+            "/backupProtectedItems?api-version=2023-02-01"
+        )
+
+        try:
+            protected_items = arm_list(token, items_url)
+        except Exception as exc:
+            print(f"    ⚠  Could not list backup protected items for vault {vault_name}: {exc}")
+            continue
+
+        for item in protected_items:
+            props = item.get("properties") or {}
+
+            # Different API shapes expose VM identity with different field names.
+            source_id = str(
+                props.get("sourceResourceId")
+                or props.get("virtualMachineId")
+                or props.get("sourceResourceID")
+                or ""
+            ).strip()
+            if not source_id:
+                continue
+
+            source_key = source_id.lower()
+            last_run = str(
+                props.get("lastBackupTime")
+                or props.get("lastRecoveryPoint")
+                or props.get("lastBackupTimeInUTC")
+                or ""
+            )
+            status = str(
+                props.get("lastBackupStatus")
+                or props.get("protectionState")
+                or props.get("protectionStatus")
+                or "Configured"
+            )
+
+            existing = backup_index.get(source_key)
+            if not existing or (last_run and last_run > str(existing.get("backup_last_run_utc") or "")):
+                backup_index[source_key] = {
+                    "backup_configured": True,
+                    "backup_status": status,
+                    "backup_last_run_utc": last_run,
+                }
+
+    if backup_index:
+        print(f"  Backup index mapped to {len(backup_index)} VM resource ID(s)")
+
+    return backup_index
 
 
 def tags_str(tags: dict | None) -> str:
@@ -515,6 +662,15 @@ def process_subscription(
     monitor_client = MonitorManagementClient(credential, sub_id)
     summary_rows: list[dict] = []
     ts_rows: list[dict] = []
+    nic_public_ip_cache: dict[str, list[str]] = {}
+
+    try:
+        arm_token = get_token(credential)
+    except Exception as exc:
+        print(f"  ⚠  Could not get ARM token for network/backup enrichment: {exc}")
+        arm_token = ""
+
+    backup_index = build_backup_index(arm_token, sub_id) if arm_token else {}
 
     try:
         vms = list(compute_client.virtual_machines.list_all())
@@ -560,7 +716,11 @@ def process_subscription(
 
         # ── Network ───────────────────────────────────────────────────────────
         network_profile = getattr(vm, "network_profile", None)
-        nic_count = len(getattr(network_profile, "network_interfaces", None) or [])
+        nic_refs = getattr(network_profile, "network_interfaces", None) or []
+        nic_count = len(nic_refs)
+        has_public_ip, public_ip_addresses = (
+            get_vm_public_ip_info(arm_token, nic_refs, nic_public_ip_cache) if arm_token else (False, "")
+        )
 
         # ── Availability ──────────────────────────────────────────────────────
         zones = getattr(vm, "zones", None) or []
@@ -612,6 +772,18 @@ def process_subscription(
         power_state = get_power_state(compute_client, resource_group, vm_name)
         print(f"  State: {power_state or 'unknown'}")
 
+
+        # Parse tags as dict for easier lookup
+        raw_tags = getattr(vm, "tags", None)
+        tags_dict = dict(raw_tags) if raw_tags else {}
+        tags_string = tags_str(raw_tags)
+        is_databricks = any(
+            (str(k).lower() == "vendor" and str(v).lower() == "databricks")
+            for k, v in tags_dict.items()
+        )
+
+        managed_by = "Azure Databricks" if is_databricks else ""
+
         vm_info = {
             "tenant_id": tenant_id or "",
             "subscription_id": sub_id,
@@ -627,6 +799,8 @@ def process_subscription(
             "data_disk_count": data_disk_count,
             "data_disk_total_size_gb": data_disk_total_size_gb,
             "nic_count": nic_count,
+            "has_public_ip": has_public_ip,
+            "public_ip_addresses": public_ip_addresses,
             "availability_zone": availability_zone,
             "availability_set": availability_set,
             "proximity_placement_group": proximity_placement_group,
@@ -641,8 +815,31 @@ def process_subscription(
             "extensions": extensions,
             "power_state": power_state,
             "provisioning_state": fmt(getattr(vm, "provisioning_state", None)),
-            "tags": tags_str(getattr(vm, "tags", None)),
+            "tags": tags_string,
+            "managed_by": managed_by,
         }
+
+        # Backup fields: if Databricks-managed, set to N/A
+        if is_databricks:
+            vm_info["backup_configured"] = "N/A"
+            vm_info["backup_status"] = "N/A"
+            vm_info["backup_last_run_utc"] = "N/A"
+        else:
+            vm_info["backup_configured"] = False
+            vm_info["backup_status"] = "Not configured"
+            vm_info["backup_last_run_utc"] = ""
+
+        backup_info = backup_index.get(vm_id.lower())
+        if backup_info and not is_databricks:
+            vm_info["backup_configured"] = bool(backup_info.get("backup_configured"))
+            vm_info["backup_status"] = fmt(backup_info.get("backup_status"))
+            vm_info["backup_last_run_utc"] = fmt(backup_info.get("backup_last_run_utc"))
+
+        backup_info = backup_index.get(vm_id.lower())
+        if backup_info:
+            vm_info["backup_configured"] = bool(backup_info.get("backup_configured"))
+            vm_info["backup_status"] = fmt(backup_info.get("backup_status"))
+            vm_info["backup_last_run_utc"] = fmt(backup_info.get("backup_last_run_utc"))
 
         # ── Metrics — skip for deallocated VMs ───────────────────────────────
         metric_series: dict = {}

@@ -121,6 +121,9 @@ def read_customers(path: str) -> list[dict]:
         data = json.load(f)
     subs = []
     for entry in data.get("azure", []):
+        status = str(entry.get("status") or "").strip().lower()
+        if status != "active":
+            continue
         sub_id = (entry.get("subscription_id") or "").strip()
         tenant_id = (entry.get("tenant_id") or "").strip()
         sub_name = (entry.get("subscription_name") or "").strip()

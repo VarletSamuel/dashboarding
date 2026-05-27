@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-Azure Database for PostgreSQL Flexible Server - Utilization Exporter
-===================================================================
-Exports PostgreSQL Flexible Server inventory and Azure Monitor metrics into
-two files that fit the existing dashboarding/reporting contract used in this
-repo:
+Azure SQL - Utilization Exporter
+===============================
+Exports Azure SQL database inventory and Azure Monitor metrics into two files
+that fit the existing dashboarding/reporting contract used in this repo:
 
-  *_postgresql_summary_*.csv
-      One row per server with inventory, configuration, utilization summaries,
+  *_sql_summary_*.csv
+      One row per database with inventory, configuration, utilization summaries,
       and a simple advisory classification.
 
-  *_postgresql_timeseries_*.csv
-      One row per (server, timestamp) with utilization points suitable for
+  *_sql_timeseries_*.csv
+      One row per (database, timestamp) with utilization points suitable for
       sparklines and trend views.
 
 Output: semicolon-delimited, BOM-prefixed CSV (Excel-compatible).
@@ -29,9 +28,9 @@ Authentication
 
 Usage
 -----
-    python get_postgresql.py -i ../customers/CUST.json --skip-login --output-dir ./reports/CUST
-    python get_postgresql.py -i ../customers/CUST.json --lookback PT24H --output-dir ./reports/CUST
-    python get_postgresql.py -s <subscription-id> --from 2026-01-01 --to 2026-03-31 --output-dir ./reports
+    python get_sql.py -i ../customers/CUST.json --skip-login --output-dir ./reports/CUST
+    python get_sql.py -i ../customers/CUST.json --lookback PT24H --output-dir ./reports/CUST
+    python get_sql.py -s <subscription-id> --from 2026-01-01 --to 2026-03-31 --output-dir ./reports
 """
 
 import argparse
@@ -67,14 +66,14 @@ if _missing:
     print(f"\n    {sys.executable} -m pip install {' '.join(_missing)}\n")
     sys.exit(1)
 
-from azure.identity import (
+from azure.identity import (  # noqa: E402
     AzureCliCredential,
     CertificateCredential,
     ChainedTokenCredential,
     ClientSecretCredential,
     DefaultAzureCredential,
 )
-from azure.mgmt.monitor import MonitorManagementClient
+from azure.mgmt.monitor import MonitorManagementClient  # noqa: E402
 
 
 SUMMARY_COLUMNS = [
@@ -82,52 +81,68 @@ SUMMARY_COLUMNS = [
     "subscription_id",
     "subscription_name",
     "resource_group",
+    "name",
     "server_name",
     "server_id",
+    "database_name",
+    "database_id",
     "location",
-    "version",
-    "state",
-    "create_mode",
-    "replication_role",
+    "server_state",
+    "server_version",
+    "server_fully_qualified_domain_name",
     "administrator_login",
-    "fully_qualified_domain_name",
+    "public_network_access",
+    "minimal_tls_version",
+    "database_state",
     "sku_name",
     "sku_tier",
-    "compute_tier",
     "vcores",
-    "storage_size_gib",
-    "storage_tier",
-    "storage_auto_grow",
-    "storage_used_avg_mib",
-    "storage_used_peak_mib",
-    "storage_pct_avg",
-    "storage_pct_peak",
-    "backup_retention_days",
-    "geo_redundant_backup",
-    "backup_storage_used_avg_mib",
-    "high_availability_mode",
-    "standby_availability_zone",
-    "availability_zone",
-    "public_network_access",
-    "delegated_subnet_id",
-    "private_dns_zone_id",
-    "active_directory_auth_enabled",
-    "password_auth_enabled",
-    "iops_avg",
-    "iops_peak",
+    "edition",
+    "service_objective",
+    "requested_service_objective",
+    "elastic_pool_name",
+    "backup_storage_redundancy",
+    "collation",
+    "max_size_bytes",
+    "zone_redundant",
+    "creation_date",
+    "read_scale",
+    "auto_pause_delay_minutes",
+    "min_capacity",
+    "ledger_on",
     "cpu_avg_pct",
     "cpu_p95_pct",
     "cpu_peak_pct",
-    "memory_avg_pct",
-    "memory_p95_pct",
-    "memory_peak_pct",
-    "active_connections_avg",
-    "active_connections_peak",
-    "max_connections_peak",
+    "dtu_avg_pct",
+    "dtu_p95_pct",
+    "dtu_peak_pct",
+    "storage_pct_avg",
+    "storage_pct_peak",
+    "log_write_pct_avg",
+    "log_write_pct_peak",
+    "data_io_pct_avg",
+    "data_io_pct_peak",
+    "sessions_pct_avg",
+    "sessions_peak_pct",
+    "workers_pct_avg",
+    "workers_peak_pct",
+    "deadlock_total",
     "connections_failed_total",
-    "network_ingress_total_mib",
-    "network_egress_total_mib",
-    "replication_lag_peak_sec",
+    "connections_successful_total",
+    "qc_aad_admin_configured",
+    "qc_public_access_disabled",
+    "qc_tls_12_or_higher",
+    "qc_auditing_enabled",
+    "qc_auditing_90_days",
+    "qc_no_azure_services_firewall",
+    "qc_private_endpoint_configured",
+    "qc_tde_enabled",
+    "qc_backup_geo_redundant",
+    "qc_pitr_7_days",
+    "qc_ltr_configured",
+    "qc_db_auditing_enabled",
+    "qc_atp_enabled",
+    "qc_has_tags",
     "observed_sample_count",
     "advisory_category",
     "advisory_reason",
@@ -136,41 +151,34 @@ SUMMARY_COLUMNS = [
 
 TIMESERIES_COLUMNS = [
     "server_id",
+    "database_id",
     "timestamp",
     "cpu_percent",
-    "memory_percent",
+    "dtu_consumption_percent",
     "storage_percent",
-    "storage_used",
-    "active_connections",
-    "max_connections",
-    "iops",
-    "connections_failed",
-    "network_bytes_ingress",
-    "network_bytes_egress",
-    "backup_storage_used",
-    "replication_lag_seconds",
+    "log_write_percent",
+    "data_io_percent",
+    "sessions_percent",
+    "workers_percent",
+    "deadlock",
+    "connection_failed",
+    "connection_successful",
 ]
 
-POSTGRES_METRICS = [
+SQL_METRICS = [
     {"azure_name": "cpu_percent", "column": "cpu_percent", "aggregation": "Average"},
-    {"azure_name": "memory_percent", "column": "memory_percent", "aggregation": "Average"},
+    {"azure_name": "dtu_consumption_percent", "column": "dtu_consumption_percent", "aggregation": "Average"},
     {"azure_name": "storage_percent", "column": "storage_percent", "aggregation": "Average"},
-    {"azure_name": "storage_used", "column": "storage_used", "aggregation": "Average"},
-    {"azure_name": "active_connections", "column": "active_connections", "aggregation": "Average"},
-    {"azure_name": "max_connections", "column": "max_connections", "aggregation": "Maximum"},
-    {"azure_name": "iops", "column": "iops", "aggregation": "Average"},
-    {"azure_name": "connections_failed", "column": "connections_failed", "aggregation": "Total"},
-    {"azure_name": "network_bytes_ingress", "column": "network_bytes_ingress", "aggregation": "Total"},
-    {"azure_name": "network_bytes_egress", "column": "network_bytes_egress", "aggregation": "Total"},
-    {"azure_name": "backup_storage_used", "column": "backup_storage_used", "aggregation": "Average"},
-    {
-        "azure_name": "physical_replication_delay_in_seconds",
-        "column": "replication_lag_seconds",
-        "aggregation": "Maximum",
-    },
+    {"azure_name": "log_write_percent", "column": "log_write_percent", "aggregation": "Average"},
+    {"azure_name": "data_io_percent", "column": "data_io_percent", "aggregation": "Average"},
+    {"azure_name": "sessions_percent", "column": "sessions_percent", "aggregation": "Average"},
+    {"azure_name": "workers_percent", "column": "workers_percent", "aggregation": "Average"},
+    {"azure_name": "deadlock", "column": "deadlock", "aggregation": "Total"},
+    {"azure_name": "connection_failed", "column": "connection_failed", "aggregation": "Total"},
+    {"azure_name": "connection_successful", "column": "connection_successful", "aggregation": "Total"},
 ]
 
-POSTGRES_API_VERSION = "2025-08-01"
+SQL_API_VERSION = "2021-11-01"
 
 
 def parse_lookback(value: str) -> timedelta:
@@ -178,6 +186,7 @@ def parse_lookback(value: str) -> timedelta:
         return timedelta(minutes=int(value))
     except ValueError:
         pass
+
     import re
 
     match = re.match(r"PT(?:(\d+)D)?(?:(\d+)H)?(?:(\d+)M)?", value, re.IGNORECASE)
@@ -344,12 +353,6 @@ def pick_monitor_interval(start: datetime, end: datetime) -> str:
     return "PT6H"
 
 
-def bytes_to_mib(value):
-    if value is None:
-        return None
-    return value / (1024.0 * 1024.0)
-
-
 def get_metric_value(point, aggregation: str):
     agg = (aggregation or "Average").lower()
     if agg == "average":
@@ -417,51 +420,57 @@ def summarize_series(values: list[float], total_metric: bool = False) -> dict:
     }
 
 
-def classify_server(summary: dict, sku_tier: str) -> tuple[str, str]:
+def classify_database(summary: dict, sku_tier: str, service_objective: str) -> tuple[str, str]:
     cpu_p95 = summary["cpu_percent"]["p95"]
-    memory_p95 = summary["memory_percent"]["p95"]
+    dtu_p95 = summary["dtu_consumption_percent"]["p95"]
     storage_peak = summary["storage_percent"]["peak"]
-    conn_peak = summary["active_connections"]["peak"]
-    max_conn = summary["max_connections"]["peak"]
-    ingress_total = summary["network_bytes_ingress"]["total"] or 0.0
-    egress_total = summary["network_bytes_egress"]["total"] or 0.0
-    replication_peak = summary["replication_lag_seconds"]["peak"]
+    log_write_peak = summary["log_write_percent"]["peak"]
+    data_io_peak = summary["data_io_percent"]["peak"]
+    sessions_peak = summary["sessions_percent"]["peak"]
+    workers_peak = summary["workers_percent"]["peak"]
+    deadlocks = summary["deadlock"]["total"] or 0.0
+    failed_connections = summary["connection_failed"]["total"] or 0.0
+    successful_connections = summary["connection_successful"]["total"] or 0.0
 
     if storage_peak is not None and storage_peak >= 85:
-        return "storage-pressure", "Storage usage peaked above 85%; review storage growth or tier sizing."
+        return "storage-pressure", "Storage usage peaked above 85%; review database size and tier capacity."
 
     if (
         (cpu_p95 is not None and cpu_p95 >= 80)
-        or (memory_p95 is not None and memory_p95 >= 85)
-        or (max_conn and conn_peak is not None and max_conn > 0 and (conn_peak / max_conn) >= 0.8)
+        or (dtu_p95 is not None and dtu_p95 >= 80)
+        or (log_write_peak is not None and log_write_peak >= 85)
+        or (data_io_peak is not None and data_io_peak >= 85)
+        or (sessions_peak is not None and sessions_peak >= 90)
+        or (workers_peak is not None and workers_peak >= 90)
     ):
-        return "scale-up-review", "Sustained CPU, memory, or connection pressure suggests a sizing review."
+        return "scale-up-review", "Sustained CPU, DTU, IO, or session pressure suggests a sizing review."
 
-    if replication_peak is not None and replication_peak >= 300:
-        return "replication-review", "Observed read replica lag above 5 minutes; review replica health or workload split."
+    if deadlocks > 0:
+        return "deadlock-review", "Deadlock activity was observed; review query patterns and indexing."
 
-    low_traffic = (ingress_total + egress_total) < (512 * 1024 * 1024)
+    low_activity = (successful_connections + failed_connections) < 100
     if (
         (cpu_p95 is None or cpu_p95 < 10)
-        and (memory_p95 is None or memory_p95 < 20)
-        and (conn_peak is None or conn_peak <= 5)
-        and low_traffic
+        and (dtu_p95 is None or dtu_p95 < 10)
+        and (storage_peak is None or storage_peak < 20)
+        and low_activity
     ):
-        return "low-utilization", "Low sustained utilization and low traffic suggest a rightsizing review."
+        return "low-utilization", "Low sustained utilization and low activity suggest a rightsizing review."
 
-    if "burstable" in (sku_tier or "").lower() and cpu_p95 is not None and cpu_p95 >= 60:
-        return "burstable-review", "Burstable SKU shows steady utilization; review whether a general-purpose tier is a better fit."
+    if "serverless" in (service_objective or "").lower() or "serverless" in (sku_tier or "").lower():
+        if cpu_p95 is not None and cpu_p95 < 20 and dtu_p95 is not None and dtu_p95 < 20:
+            return "serverless-idle", "Serverless database is lightly used; review auto-pause and scale settings."
 
     return "healthy", "No clear pressure or oversizing signal from the observed metric window."
 
 
-def list_postgresql_servers(credential, subscription_id: str) -> list[dict]:
+def list_sql_servers(credential, subscription_id: str) -> list[dict]:
     token = get_token(credential)
     headers = {"Authorization": f"Bearer {token}"}
     url = (
         f"https://management.azure.com/subscriptions/{subscription_id}"
-        f"/providers/Microsoft.DBforPostgreSQL/flexibleServers"
-        f"?api-version={POSTGRES_API_VERSION}"
+        f"/providers/Microsoft.Sql/servers"
+        f"?api-version={SQL_API_VERSION}"
     )
     items: list[dict] = []
     while url:
@@ -473,18 +482,47 @@ def list_postgresql_servers(credential, subscription_id: str) -> list[dict]:
     return items
 
 
+def list_sql_databases(credential, subscription_id: str, server: dict) -> list[dict]:
+    token = get_token(credential)
+    headers = {"Authorization": f"Bearer {token}"}
+    server_id = str(server.get("id") or "")
+    server_name = str(server.get("name") or "")
+    resource_group = parse_resource_group(server_id)
+    if not (server_name and resource_group):
+        return []
+
+    url = (
+        f"https://management.azure.com/subscriptions/{subscription_id}"
+        f"/resourceGroups/{resource_group}"
+        f"/providers/Microsoft.Sql/servers/{server_name}/databases"
+        f"?api-version={SQL_API_VERSION}"
+    )
+    items: list[dict] = []
+    while url:
+        response = requests.get(url, headers=headers, timeout=120)
+        response.raise_for_status()
+        payload = response.json()
+        for database in payload.get("value", []):
+            db_name = str(database.get("name") or "")
+            if db_name.lower() == "master":
+                continue
+            items.append(database)
+        url = payload.get("nextLink")
+    return items
+
+
 def process_subscription(credential, sub_id: str, sub_name: str | None, tenant_id: str, timespan: str, interval: str):
     print(f"\n-- Subscription: {sub_name or sub_id} --")
     monitor_client = MonitorManagementClient(credential, sub_id)
 
     try:
-        servers = list_postgresql_servers(credential, sub_id)
+        servers = list_sql_servers(credential, sub_id)
     except Exception as exc:
-        print(f"  WARN Could not list PostgreSQL flexible servers: {exc}")
+        print(f"  WARN Could not list Azure SQL servers: {exc}")
         return [], []
 
     if not servers:
-        print("  (no PostgreSQL flexible servers found)")
+        print("  (no Azure SQL servers found)")
         return [], []
 
     summary_rows = []
@@ -496,103 +534,163 @@ def process_subscription(credential, sub_id: str, sub_name: str | None, tenant_i
         resource_group = parse_resource_group(server_id)
         print(f"  Server: {server_name}  (RG: {resource_group})")
 
-        props = server.get("properties") or {}
-        sku = server.get("sku") or {}
-        storage = props.get("storage") or {}
-        backup = props.get("backup") or {}
-        network = props.get("network") or {}
-        ha = props.get("highAvailability") or {}
-        auth = props.get("authConfig") or {}
+        server_props = server.get("properties") or {}
+        server_location = server.get("location") or ""
+        private_ep_connections = server_props.get("privateEndpointConnections") or []
 
-        combined_rows: dict[str, dict] = {}
-        metric_summaries: dict[str, dict] = {}
+        def bool_str(value: bool) -> str:
+            return "True" if value else "False"
 
-        for metric in POSTGRES_METRICS:
-            series = get_metric_series(
-                monitor_client,
-                server_id,
-                metric["azure_name"],
-                metric["aggregation"],
-                timespan,
-                interval,
+        def truthy(value) -> bool:
+            return str(value).strip().lower() in {"true", "1", "yes", "enabled"}
+
+        tls_version = (server_props.get("minimalTlsVersion") or "").strip().lower().replace("_", "")
+        server_qc = {
+            "qc_aad_admin_configured": bool_str(bool(dig(server_props, "administrators", "login") or dig(server_props, "administrators", "sid"))),
+            "qc_public_access_disabled": bool_str((server_props.get("publicNetworkAccess") or "").strip().lower() in {"disabled", "false"}),
+            "qc_tls_12_or_higher": bool_str(tls_version in {"1.2", "1.3", "tls12", "tls13"}),
+            "qc_auditing_enabled": bool_str(truthy(dig(server_props, "isAzureMonitorAuditEnabled")) or truthy(dig(server_props, "auditing", "state"))),
+            "qc_auditing_90_days": bool_str((dig(server_props, "auditing", "retentionDays") or 0) >= 90),
+            "qc_no_azure_services_firewall": bool_str(True),
+            "qc_private_endpoint_configured": bool_str(len(private_ep_connections) > 0),
+        }
+
+        try:
+            databases = list_sql_databases(credential, sub_id, server)
+        except Exception as exc:
+            print(f"    WARN Could not list databases for {server_name}: {exc}")
+            continue
+
+        if not databases:
+            print("    (no user databases found)")
+            continue
+
+        for database in databases:
+            database_id = str(database.get("id") or "")
+            database_name = str(database.get("name") or "")
+            print(f"    Database: {database_name}")
+
+            db_props = database.get("properties") or {}
+            sku = database.get("sku") or {}
+            backup_storage_redundancy = (
+                db_props.get("currentBackupStorageRedundancy")
+                or db_props.get("requestedBackupStorageRedundancy")
+                or ""
             )
-            values = [value for _timestamp, value in series]
-            metric_summaries[metric["column"]] = summarize_series(
-                values,
-                total_metric=metric["aggregation"].lower() == "total",
-            )
-            for timestamp, value in series:
-                row = combined_rows.setdefault(
-                    timestamp,
-                    {column: "" for column in TIMESERIES_COLUMNS},
-                )
-                row["server_id"] = server_id
-                row["timestamp"] = timestamp
-                row[metric["column"]] = round(value, 4)
-
-        ordered_ts = [combined_rows[key] for key in sorted(combined_rows.keys())]
-        ts_rows.extend(ordered_ts)
-
-        advisory_category, advisory_reason = classify_server(metric_summaries, str(sku.get("tier") or ""))
-
-        summary_rows.append(
-            {
-                "tenant_id": tenant_id or "",
-                "subscription_id": sub_id,
-                "subscription_name": sub_name or "",
-                "resource_group": resource_group,
-                "server_name": server_name,
-                "server_id": server_id,
-                "location": server.get("location") or "",
-                "version": props.get("version") or "",
-                "state": props.get("state") or "",
-                "create_mode": props.get("createMode") or "",
-                "replication_role": props.get("replicationRole") or "",
-                "administrator_login": props.get("administratorLogin") or "",
-                "fully_qualified_domain_name": props.get("fullyQualifiedDomainName") or "",
-                "sku_name": sku.get("name") or "",
-                "sku_tier": sku.get("tier") or "",
-                "compute_tier": props.get("tier") or dig(props, "storage", "tier") or "",
-                "vcores": sku.get("capacity") or "",
-                "storage_size_gib": storage.get("storageSizeGB") or "",
-                "storage_tier": storage.get("tier") or "",
-                "storage_auto_grow": storage.get("autoGrow") or "",
-                "storage_used_avg_mib": round(bytes_to_mib(metric_summaries["storage_used"]["avg"]), 2) if metric_summaries["storage_used"]["avg"] is not None else "",
-                "storage_used_peak_mib": round(bytes_to_mib(metric_summaries["storage_used"]["peak"]), 2) if metric_summaries["storage_used"]["peak"] is not None else "",
-                "storage_pct_avg": round(metric_summaries["storage_percent"]["avg"], 2) if metric_summaries["storage_percent"]["avg"] is not None else "",
-                "storage_pct_peak": round(metric_summaries["storage_percent"]["peak"], 2) if metric_summaries["storage_percent"]["peak"] is not None else "",
-                "backup_retention_days": backup.get("backupRetentionDays") or "",
-                "geo_redundant_backup": backup.get("geoRedundantBackup") or "",
-                "backup_storage_used_avg_mib": round(bytes_to_mib(metric_summaries["backup_storage_used"]["avg"]), 2) if metric_summaries["backup_storage_used"]["avg"] is not None else "",
-                "high_availability_mode": ha.get("mode") or "",
-                "standby_availability_zone": ha.get("standbyAvailabilityZone") or "",
-                "availability_zone": props.get("availabilityZone") or "",
-                "public_network_access": network.get("publicNetworkAccess") or "",
-                "delegated_subnet_id": network.get("delegatedSubnetResourceId") or "",
-                "private_dns_zone_id": network.get("privateDnsZoneArmResourceId") or "",
-                "active_directory_auth_enabled": auth.get("activeDirectoryAuth") or "",
-                "password_auth_enabled": auth.get("passwordAuth") or "",
-                "iops_avg": round(metric_summaries["iops"]["avg"], 2) if metric_summaries["iops"]["avg"] is not None else "",
-                "iops_peak": round(metric_summaries["iops"]["peak"], 2) if metric_summaries["iops"]["peak"] is not None else "",
-                "cpu_avg_pct": round(metric_summaries["cpu_percent"]["avg"], 2) if metric_summaries["cpu_percent"]["avg"] is not None else "",
-                "cpu_p95_pct": round(metric_summaries["cpu_percent"]["p95"], 2) if metric_summaries["cpu_percent"]["p95"] is not None else "",
-                "cpu_peak_pct": round(metric_summaries["cpu_percent"]["peak"], 2) if metric_summaries["cpu_percent"]["peak"] is not None else "",
-                "memory_avg_pct": round(metric_summaries["memory_percent"]["avg"], 2) if metric_summaries["memory_percent"]["avg"] is not None else "",
-                "memory_p95_pct": round(metric_summaries["memory_percent"]["p95"], 2) if metric_summaries["memory_percent"]["p95"] is not None else "",
-                "memory_peak_pct": round(metric_summaries["memory_percent"]["peak"], 2) if metric_summaries["memory_percent"]["peak"] is not None else "",
-                "active_connections_avg": round(metric_summaries["active_connections"]["avg"], 2) if metric_summaries["active_connections"]["avg"] is not None else "",
-                "active_connections_peak": round(metric_summaries["active_connections"]["peak"], 2) if metric_summaries["active_connections"]["peak"] is not None else "",
-                "max_connections_peak": round(metric_summaries["max_connections"]["peak"], 2) if metric_summaries["max_connections"]["peak"] is not None else "",
-                "connections_failed_total": round(metric_summaries["connections_failed"]["total"], 2) if metric_summaries["connections_failed"]["total"] is not None else "",
-                "network_ingress_total_mib": round(bytes_to_mib(metric_summaries["network_bytes_ingress"]["total"]), 2) if metric_summaries["network_bytes_ingress"]["total"] is not None else "",
-                "network_egress_total_mib": round(bytes_to_mib(metric_summaries["network_bytes_egress"]["total"]), 2) if metric_summaries["network_bytes_egress"]["total"] is not None else "",
-                "replication_lag_peak_sec": round(metric_summaries["replication_lag_seconds"]["peak"], 2) if metric_summaries["replication_lag_seconds"]["peak"] is not None else "",
-                "observed_sample_count": max((item["samples"] for item in metric_summaries.values()), default=0),
-                "advisory_category": advisory_category,
-                "advisory_reason": advisory_reason,
-                "tags": tags_str(server.get("tags") or {}),
+            pitr_days = db_props.get("retentionDays") or dig(db_props, "backupShortTermRetentionPolicy", "retentionDays") or 0
+            try:
+                pitr_days = int(pitr_days)
+            except (TypeError, ValueError):
+                pitr_days = 0
+            ltr_enabled = bool(dig(db_props, "backupLongTermRetentionPolicy", "weeklyRetention") or dig(db_props, "backupLongTermRetentionPolicy", "monthlyRetention") or dig(db_props, "backupLongTermRetentionPolicy", "yearlyRetention"))
+            db_qc = {
+                "qc_tde_enabled": bool_str(str(db_props.get("transparentDataEncryption") or "").strip().lower() in {"enabled", "true", "on"}),
+                "qc_backup_geo_redundant": bool_str(str(backup_storage_redundancy).strip().lower() in {"geo", "geozone", "georedundant", "geozoneredundant"}),
+                "qc_pitr_7_days": bool_str((pitr_days or 0) >= 7),
+                "qc_ltr_configured": bool_str(ltr_enabled),
+                "qc_db_auditing_enabled": bool_str(truthy(dig(db_props, "auditing", "state")) or truthy(dig(db_props, "isLedgerOn"))),
+                "qc_atp_enabled": bool_str(str(dig(db_props, "securityAlertPolicy", "state") or "").strip().lower() in {"enabled", "true", "on"}),
+                "qc_has_tags": bool_str(bool(tags_str(database.get("tags") or server.get("tags") or {}))),
             }
-        )
+
+            combined_rows: dict[str, dict] = {}
+            metric_summaries: dict[str, dict] = {}
+
+            for metric in SQL_METRICS:
+                series = get_metric_series(
+                    monitor_client,
+                    database_id,
+                    metric["azure_name"],
+                    metric["aggregation"],
+                    timespan,
+                    interval,
+                )
+                values = [value for _timestamp, value in series]
+                metric_summaries[metric["column"]] = summarize_series(
+                    values,
+                    total_metric=metric["aggregation"].lower() == "total",
+                )
+                for timestamp, value in series:
+                    row = combined_rows.setdefault(
+                        timestamp,
+                        {column: "" for column in TIMESERIES_COLUMNS},
+                    )
+                    row["server_id"] = server_id
+                    row["database_id"] = database_id
+                    row["timestamp"] = timestamp
+                    row[metric["column"]] = round(value, 4)
+
+            ordered_ts = [combined_rows[key] for key in sorted(combined_rows.keys())]
+            ts_rows.extend(ordered_ts)
+
+            advisory_category, advisory_reason = classify_database(
+                metric_summaries,
+                str(sku.get("tier") or ""),
+                str(db_props.get("currentServiceObjectiveName") or ""),
+            )
+
+            summary_rows.append(
+                {
+                    "tenant_id": tenant_id or "",
+                    "subscription_id": sub_id,
+                    "subscription_name": sub_name or "",
+                    "resource_group": resource_group,
+                    "name": database_name,
+                    "server_name": server_name,
+                    "server_id": server_id,
+                    "database_name": database_name,
+                    "database_id": database_id,
+                    "location": database.get("location") or server_location,
+                    "server_state": server_props.get("state") or "",
+                    "server_version": server_props.get("version") or "",
+                    "server_fully_qualified_domain_name": server_props.get("fullyQualifiedDomainName") or "",
+                    "administrator_login": server_props.get("administratorLogin") or "",
+                    "public_network_access": server_props.get("publicNetworkAccess") or "",
+                    "minimal_tls_version": server_props.get("minimalTlsVersion") or "",
+                    "database_state": db_props.get("status") or "",
+                    "sku_name": sku.get("name") or "",
+                    "sku_tier": sku.get("tier") or "",
+                    "vcores": sku.get("capacity") or "",
+                    "edition": db_props.get("edition") or "",
+                    "service_objective": db_props.get("currentServiceObjectiveName") or "",
+                    "requested_service_objective": db_props.get("requestedServiceObjectiveName") or "",
+                    "elastic_pool_name": db_props.get("elasticPoolName") or "",
+                    "backup_storage_redundancy": backup_storage_redundancy,
+                    "collation": db_props.get("collation") or "",
+                    "max_size_bytes": db_props.get("maxSizeBytes") or "",
+                    "zone_redundant": db_props.get("zoneRedundant") or "",
+                    "creation_date": db_props.get("creationDate") or "",
+                    "read_scale": db_props.get("readScale") or "",
+                    "auto_pause_delay_minutes": db_props.get("autoPauseDelay") or "",
+                    "min_capacity": db_props.get("minCapacity") or "",
+                    "ledger_on": db_props.get("ledgerOn") or "",
+                    "cpu_avg_pct": round(metric_summaries["cpu_percent"]["avg"], 2) if metric_summaries["cpu_percent"]["avg"] is not None else "",
+                    "cpu_p95_pct": round(metric_summaries["cpu_percent"]["p95"], 2) if metric_summaries["cpu_percent"]["p95"] is not None else "",
+                    "cpu_peak_pct": round(metric_summaries["cpu_percent"]["peak"], 2) if metric_summaries["cpu_percent"]["peak"] is not None else "",
+                    "dtu_avg_pct": round(metric_summaries["dtu_consumption_percent"]["avg"], 2) if metric_summaries["dtu_consumption_percent"]["avg"] is not None else "",
+                    "dtu_p95_pct": round(metric_summaries["dtu_consumption_percent"]["p95"], 2) if metric_summaries["dtu_consumption_percent"]["p95"] is not None else "",
+                    "dtu_peak_pct": round(metric_summaries["dtu_consumption_percent"]["peak"], 2) if metric_summaries["dtu_consumption_percent"]["peak"] is not None else "",
+                    "storage_pct_avg": round(metric_summaries["storage_percent"]["avg"], 2) if metric_summaries["storage_percent"]["avg"] is not None else "",
+                    "storage_pct_peak": round(metric_summaries["storage_percent"]["peak"], 2) if metric_summaries["storage_percent"]["peak"] is not None else "",
+                    "log_write_pct_avg": round(metric_summaries["log_write_percent"]["avg"], 2) if metric_summaries["log_write_percent"]["avg"] is not None else "",
+                    "log_write_pct_peak": round(metric_summaries["log_write_percent"]["peak"], 2) if metric_summaries["log_write_percent"]["peak"] is not None else "",
+                    "data_io_pct_avg": round(metric_summaries["data_io_percent"]["avg"], 2) if metric_summaries["data_io_percent"]["avg"] is not None else "",
+                    "data_io_pct_peak": round(metric_summaries["data_io_percent"]["peak"], 2) if metric_summaries["data_io_percent"]["peak"] is not None else "",
+                    "sessions_pct_avg": round(metric_summaries["sessions_percent"]["avg"], 2) if metric_summaries["sessions_percent"]["avg"] is not None else "",
+                    "sessions_peak_pct": round(metric_summaries["sessions_percent"]["peak"], 2) if metric_summaries["sessions_percent"]["peak"] is not None else "",
+                    "workers_pct_avg": round(metric_summaries["workers_percent"]["avg"], 2) if metric_summaries["workers_percent"]["avg"] is not None else "",
+                    "workers_peak_pct": round(metric_summaries["workers_percent"]["peak"], 2) if metric_summaries["workers_percent"]["peak"] is not None else "",
+                    "deadlock_total": round(metric_summaries["deadlock"]["total"], 2) if metric_summaries["deadlock"]["total"] is not None else "",
+                    "connections_failed_total": round(metric_summaries["connection_failed"]["total"], 2) if metric_summaries["connection_failed"]["total"] is not None else "",
+                    "connections_successful_total": round(metric_summaries["connection_successful"]["total"], 2) if metric_summaries["connection_successful"]["total"] is not None else "",
+                    **server_qc,
+                    **db_qc,
+                    "observed_sample_count": max((item["samples"] for item in metric_summaries.values()), default=0),
+                    "advisory_category": advisory_category,
+                    "advisory_reason": advisory_reason,
+                    "tags": tags_str(database.get("tags") or server.get("tags") or {}),
+                }
+            )
 
     return summary_rows, ts_rows
 
@@ -665,11 +763,11 @@ def export(args):
     date_range_str = f"{start.strftime('%Y-%m-%d')}_{end.strftime('%Y-%m-%d')}"
     if args.input:
         prefix = os.path.splitext(os.path.basename(args.input))[0].upper()
-        summary_filename = f"{prefix}_postgresql_summary_{date_range_str}.csv"
-        ts_filename = f"{prefix}_postgresql_timeseries_{date_range_str}.csv"
+        summary_filename = f"{prefix}_sql_summary_{date_range_str}.csv"
+        ts_filename = f"{prefix}_sql_timeseries_{date_range_str}.csv"
     else:
-        summary_filename = f"postgresql_summary_{date_range_str}.csv"
-        ts_filename = f"postgresql_timeseries_{date_range_str}.csv"
+        summary_filename = f"sql_summary_{date_range_str}.csv"
+        ts_filename = f"sql_timeseries_{date_range_str}.csv"
 
     summary_path = os.path.join(args.output_dir, summary_filename)
     ts_path = os.path.join(args.output_dir, ts_filename)
@@ -707,7 +805,7 @@ def export(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Export Azure Database for PostgreSQL Flexible Server utilization data.",
+        description="Export Azure SQL database utilization data.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:

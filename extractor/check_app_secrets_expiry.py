@@ -83,6 +83,9 @@ def read_tenants_from_customer_json(json_path: str) -> list[str]:
     data = read_customer_json(json_path)
     tenant_map = defaultdict(list)
     for entry in data.get("azure", []):
+        status = str(entry.get("status") or "").strip().lower()
+        if status != "active":
+            continue
         tenant = (entry.get("tenant_id") or "").strip()
         sub_id = (entry.get("subscription_id") or "").strip()
         if tenant and sub_id:

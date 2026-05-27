@@ -84,6 +84,7 @@ SUMMARY_COLUMNS = [
     "subscription_id",
     "subscription_name",
     "resource_group",
+    "name",
     "key_vault_name",
     "key_vault_id",
     "location",
@@ -101,6 +102,14 @@ SUMMARY_COLUMNS = [
     "bypass_rules",
     "private_endpoint_count",
     "private_endpoint_names",
+    "soft_delete_retention_days",
+    "qc_soft_delete_enabled",
+    "qc_purge_protection_enabled",
+    "qc_rbac_authorization",
+    "qc_network_restricted",
+    "qc_private_endpoint_configured",
+    "qc_soft_delete_90_days",
+    "qc_has_tags",
     "tags",
     "quality_score",
     "security_score",
@@ -127,6 +136,9 @@ def read_customer_csv(json_path: str) -> dict:
         data = json.load(handle)
     tenant_map = defaultdict(list)
     for entry in data.get("azure", []):
+        status = str(entry.get("status") or "").strip().lower()
+        if status != "active":
+            continue
         tenant = (entry.get("tenant_id") or "").strip()
         sub_id = (entry.get("subscription_id") or "").strip()
         sub_name = (entry.get("subscription_name") or "").strip()
@@ -340,6 +352,12 @@ def build_vault_summary(
     resource_group: str,
     network_client: NetworkManagementClient,
 ) -> dict:
+    def bool_str(value: bool) -> str:
+        return "True" if value else "False"
+
+    def truthy(value) -> bool:
+        return str(value).strip().lower() in {"true", "1", "yes", "enabled"}
+
     vault_id = fmt(vault.id)
     properties = getattr(vault, "properties", None)
     sku = getattr(vault, "sku", None)
@@ -353,6 +371,7 @@ def build_vault_summary(
         "subscription_name": sub_name or "",
         "resource_group": resource_group,
         "key_vault_name": fmt(vault.name),
+        "name": fmt(vault.name),
         "key_vault_id": vault_id,
         "location": fmt(vault.location),
         "sku_name": fmt(getattr(sku, "name", "")),
@@ -369,8 +388,23 @@ def build_vault_summary(
         "bypass_rules": bypass_rules,
         "private_endpoint_count": private_ep_count,
         "private_endpoint_names": private_ep_names,
+        "soft_delete_retention_days": getattr(properties, "soft_delete_retention_in_days", None),
         "tags": tags_str(getattr(vault, "tags", None)),
     }
+
+    retention_days = vault_info.get("soft_delete_retention_days")
+    try:
+        retention_days = int(retention_days) if retention_days not in (None, "") else 0
+    except (TypeError, ValueError):
+        retention_days = 0
+
+    vault_info["qc_soft_delete_enabled"] = bool_str(truthy(vault_info.get("soft_delete_enabled")))
+    vault_info["qc_purge_protection_enabled"] = bool_str(truthy(vault_info.get("purge_protection_enabled")))
+    vault_info["qc_rbac_authorization"] = bool_str(truthy(vault_info.get("enable_rbac_authorization")))
+    vault_info["qc_network_restricted"] = bool_str((vault_info.get("default_action") or "").strip().lower() == "deny")
+    vault_info["qc_private_endpoint_configured"] = bool_str((vault_info.get("private_endpoint_count") or 0) > 0)
+    vault_info["qc_soft_delete_90_days"] = bool_str(retention_days >= 90)
+    vault_info["qc_has_tags"] = bool_str(bool(vault_info.get("tags")))
 
     security_score = calculate_security_score(vault_info)
     compliance_score = calculate_compliance_score(vault_info)

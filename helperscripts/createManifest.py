@@ -24,10 +24,26 @@ KNOWN_DASHBOARDS: Dict[str, Tuple[str, str]] = {
 	"app_service_plans": ("appServicePlans", "App Service Plans"),
 	"container_apps": ("containerApps", "Container Apps"),
 	"postgresql": ("postgresql", "PostgreSQL"),
+	"sql": ("sqlDatabases", "Azure SQL"),
+	"sql_database": ("sqlDatabases", "Azure SQL"),
+	"sql_databases": ("sqlDatabases", "Azure SQL"),
+	"sqldatabase": ("sqlDatabases", "Azure SQL"),
+	"sqldatabases": ("sqlDatabases", "Azure SQL"),
+	"azure_sql": ("sqlDatabases", "Azure SQL"),
 	"virtual_machines": ("virtualMachines", "Virtual Machines"),
 	"eventhub": ("eventhubs", "EventHub"),
 	"eventhubs": ("eventhubs", "EventHub"),
+	"storage_accounts": ("storageAccounts", "Storage Accounts"),
+	"keyvault": ("keyVaults", "Key Vaults"),
+	"keyvaults": ("keyVaults", "Key Vaults"),
+	"app_secret_expiration": ("appSecretExpirations", "App Secret Expirations"),
+	"app_secret_expirations": ("appSecretExpirations", "App Secret Expirations"),
+	"loganalyticsworkspace": ("logAnalyticsWorkspaces", "Log Analytics Workspaces"),
+	"log_analytics_workspace": ("logAnalyticsWorkspaces", "Log Analytics Workspaces"),
+	"log_analytics": ("logAnalyticsWorkspaces", "Log Analytics Workspaces"),
 	"daily_costs": ("azureCosts", "Azure Costs"),
+	"quota_consumption_trends": ("quotaConsumptionTrends", "Quota Consumption Trends"),
+	"quota_consumption": ("quotaConsumptionTrends", "Quota Consumption Trends"),
 }
 
 TYPE_SORT_ORDER = {
@@ -41,9 +57,15 @@ DASHBOARD_ORDER = [
 	"appServicePlans",
 	"containerApps",
 	"postgresql",
+	"sqlDatabases",
 	"virtualMachines",
 	"eventhubs",
+	"storageAccounts",
+	"keyVaults",
+	"appSecretExpirations",
+	"logAnalyticsWorkspaces",
 	"azureCosts",
+	"quotaConsumptionTrends",
 ]
 
 
@@ -73,6 +95,23 @@ def parse_date_from_filename(filename: str) -> Tuple[Optional[str], Optional[str
 	match = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})", filename)
 	if match:
 		return match.group(1), match.group(2)
+
+	match = re.search(r"(\d{4}-\d{2}-\d{2})", filename)
+	if match:
+		value = match.group(1)
+		return value, value
+
+	match = re.search(r"(\d{8})_(\d{4})", filename)
+	if match:
+		stamp = match.group(1)
+		value = f"{stamp[0:4]}-{stamp[4:6]}-{stamp[6:8]}"
+		return value, value
+
+	match = re.search(r"(\d{8})", filename)
+	if match:
+		stamp = match.group(1)
+		value = f"{stamp[0:4]}-{stamp[4:6]}-{stamp[6:8]}"
+		return value, value
 	return None, None
 
 
@@ -84,6 +123,12 @@ def parse_report_file(file_path: Path) -> Optional[Dict[str, Any]]:
 	)
 	dashboard_pattern = re.compile(
 		r"^(?P<customer>[A-Za-z0-9]+)_(?P<metric>.+)_(?P<file_type>summary|timeseries)_(?P<date_from>\d{4}-\d{2}-\d{2})_(?P<date_to>\d{4}-\d{2}-\d{2})\.csv$"
+	)
+	single_day_summary_pattern = re.compile(
+		r"^(?P<customer>[A-Za-z0-9]+)_(?P<metric>.+)_summary_(?P<date>\d{4}-\d{2}-\d{2})\.csv$"
+	)
+	compact_timestamp_summary_pattern = re.compile(
+		r"^(?P<customer>[A-Za-z0-9]+)_(?P<metric>.+)_summary_(?P<stamp>\d{8}_\d{4})\.csv$"
 	)
 
 	match = daily_costs_pattern.match(name)
@@ -123,6 +168,45 @@ def parse_report_file(file_path: Path) -> Optional[Dict[str, Any]]:
 				"filename": name,
 				"date_from": date_from,
 				"date_to": date_to,
+			},
+		}
+
+	match = single_day_summary_pattern.match(name)
+	if match:
+		customer = match.group("customer")
+		metric = match.group("metric")
+		date_value = match.group("date")
+		dashboard_id, dashboard_title = metric_to_dashboard(metric)
+		return {
+			"customer": customer,
+			"kind": "dashboard_file",
+			"dashboard_id": dashboard_id,
+			"dashboard_title": dashboard_title,
+			"file": {
+				"type": "summary",
+				"filename": name,
+				"date_from": date_value,
+				"date_to": date_value,
+			},
+		}
+
+	match = compact_timestamp_summary_pattern.match(name)
+	if match:
+		customer = match.group("customer")
+		metric = match.group("metric")
+		stamp = match.group("stamp")
+		date_value = f"{stamp[0:4]}-{stamp[4:6]}-{stamp[6:8]}"
+		dashboard_id, dashboard_title = metric_to_dashboard(metric)
+		return {
+			"customer": customer,
+			"kind": "dashboard_file",
+			"dashboard_id": dashboard_id,
+			"dashboard_title": dashboard_title,
+			"file": {
+				"type": "summary",
+				"filename": name,
+				"date_from": date_value,
+				"date_to": date_value,
 			},
 		}
 

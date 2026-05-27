@@ -88,6 +88,7 @@ SUMMARY_COLUMNS = [
     "subscription_id",
     "subscription_name",
     "resource_group",
+    "name",
     "plan_name",
     "plan_id",
     "location",
@@ -143,6 +144,11 @@ SUMMARY_COLUMNS = [
     "disk_queue_peak_window",
     "bytes_received_total_window",
     "bytes_sent_total_window",
+    "qc_not_free_shared",
+    "qc_min_2_instances",
+    "qc_zone_redundant",
+    "qc_has_apps",
+    "qc_has_tags",
 ]
 
 # ── Timeseries file: one row per plan × timestamp ──────────────────────────
@@ -208,6 +214,9 @@ def read_customer_csv(json_path: str) -> dict:
 
     tenant_map = defaultdict(list)
     for entry in data.get("azure", []):
+        status = str(entry.get("status") or "").strip().lower()
+        if status != "active":
+            continue
         tenant = (entry.get("tenant_id") or "").strip()
         sub_id = (entry.get("subscription_id") or "").strip()
         sub_name = (entry.get("subscription_name") or "").strip()
@@ -706,9 +715,18 @@ def process_subscription(
 
         cost_signal_category, cost_signal_reason = build_cost_signal(plan_info, app_summary, metric_summaries)
 
+        sku_tier_lower = (plan_info.get("sku_tier") or "").strip().lower()
+        non_paid_tiers = {"free", "shared", "dynamic"}
+        qc_not_free_shared = sku_tier_lower not in non_paid_tiers
+        qc_min_2_instances = (plan_info.get("sku_capacity") or 0) >= 2
+        qc_zone_redundant = bool(plan_info.get("zone_redundant"))
+        qc_has_apps = app_summary.get("apps_count", 0) > 0
+        qc_has_tags = bool(plan_info.get("tags"))
+
         base_row = {
             **plan_info,
             **app_summary,
+            "name": plan_info.get("plan_name", ""),
             "cost_signal_category": cost_signal_category,
             "cost_signal_reason": cost_signal_reason,
             "observed_sample_count": max((summary["samples"] for summary in metric_summaries.values()), default=0),
@@ -726,6 +744,11 @@ def process_subscription(
             "disk_queue_peak_window": metric_summaries["disk_queue_length"]["peak"],
             "bytes_received_total_window": metric_summaries["bytes_received"]["total"],
             "bytes_sent_total_window": metric_summaries["bytes_sent"]["total"],
+            "qc_not_free_shared": qc_not_free_shared,
+            "qc_min_2_instances": qc_min_2_instances,
+            "qc_zone_redundant": qc_zone_redundant,
+            "qc_has_apps": qc_has_apps,
+            "qc_has_tags": qc_has_tags,
         }
 
         ts_map = {ts: {} for ts in ts_set}

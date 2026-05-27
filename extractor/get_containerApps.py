@@ -197,6 +197,9 @@ def read_customer_csv(json_path: str):
 
     tenant_map = defaultdict(list)
     for entry in data.get("azure", []):
+        status = str(entry.get("status") or "").strip().lower()
+        if status != "active":
+            continue
         tenant = (entry.get("tenant_id") or "").strip()
         sub_id = (entry.get("subscription_id") or "").strip()
         sub_name = (entry.get("subscription_name") or "").strip()

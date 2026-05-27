@@ -23,13 +23,14 @@ import os
 import sys
 import time
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import requests
 
 _REQUIRED = {
     "azure.identity": "azure-identity",
+    "azure.mgmt.consumption": "azure-mgmt-consumption",
     "requests": "requests",
 }
 
@@ -52,6 +53,7 @@ from azure.identity import (  # noqa: E402
     ClientSecretCredential,
     DefaultAzureCredential,
 )
+from azure.mgmt.consumption import ConsumptionManagementClient  # noqa: E402
 
 
 CSV_COLUMNS = [
@@ -77,9 +79,44 @@ CSV_COLUMNS = [
     "billing_scope_id",
     "commitment_currency",
     "commitment_amount",
+    "utilization_pct_1_day",
+    "utilization_pct_7_day",
+    "utilization_pct_30_day",
+    "deep_link_to_commitment",
     "source",
     "run_date",
 ]
+
+LEGACY_RI_COLUMNS = [
+    "Name",
+    "Reservation Id",
+    "Reservation order Id",
+    "Status",
+    "Expiration date",
+    "Purchase date",
+    "Term",
+    "Scope",
+    "Scope subscription",
+    "Scope resource group",
+    "Type",
+    "Product name",
+    "Region",
+    "Quantity",
+    "Utilization % 1 Day",
+    "Utilization % 7 Day",
+    "Utilization % 30 Day",
+    "Deep link to reservation",
+]
+
+_PLACEHOLDER_SUB = "00000000-0000-0000-0000-000000000000"
+PORTAL_RI_LINK = (
+    "https://portal.azure.com#resource/providers/microsoft.capacity"
+    "/reservationOrders/{order_id}/reservations/{reservation_id}/overview"
+)
+PORTAL_SP_LINK = (
+    "https://portal.azure.com#view/Microsoft_Azure_Capacity/"
+    "SavingsPlanOrderBlade/orderId/{order_id}"
+)
 
 
 def get_credential(
@@ -138,6 +175,9 @@ def read_customer_json(json_path: str) -> dict[str, list[tuple[str, str]]]:
 
     tenant_map: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for entry in data.get("azure", []):
+        status = str(entry.get("status") or "").strip().lower()
+        if status != "active":
+            continue
         tenant = (entry.get("tenant_id") or "").strip()
         sub_id = (entry.get("subscription_id") or "").strip()
         sub_name = (entry.get("subscription_name") or "").strip()
@@ -226,6 +266,15 @@ def _to_csv_value(value):
     return str(value)
 
 
+def _to_number_or_none(value):
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _scope_to_string(scope_value) -> str:
     if scope_value is None:
         return ""
@@ -234,7 +283,98 @@ def _scope_to_string(scope_value) -> str:
     return str(scope_value)
 
 
-def parse_reservation_row(tenant_id: str, order: dict, reservation: dict, run_date: str) -> dict:
+def _scope_parts(applied_scope_type: str, applied_scope_value) -> tuple[str, str, str]:
+    scope_type = (applied_scope_type or "").strip().lower()
+    if scope_type == "shared":
+        return "Shared", "All subscriptions", "All resource groups"
+
+    raw_scope = ""
+    if isinstance(applied_scope_value, list) and applied_scope_value:
+        raw_scope = str(applied_scope_value[0])
+    elif applied_scope_value:
+        raw_scope = str(applied_scope_value)
+
+    if not raw_scope:
+        return applied_scope_type or "", "", ""
+
+    parts = [p for p in raw_scope.split("/") if p]
+    sub_name = ""
+    rg_name = ""
+    for idx, part in enumerate(parts):
+        if part.lower() == "subscriptions" and idx + 1 < len(parts):
+            sub_name = parts[idx + 1]
+        if part.lower() == "resourcegroups" and idx + 1 < len(parts):
+            rg_name = parts[idx + 1]
+
+    scope_label = "ResourceGroup" if rg_name else ("Single" if sub_name else (applied_scope_type or ""))
+    return scope_label, sub_name, rg_name
+
+
+def _build_consumption_client(credential) -> ConsumptionManagementClient:
+    return ConsumptionManagementClient(
+        credential=credential,
+        subscription_id=_PLACEHOLDER_SUB,
+    )
+
+
+def fetch_reservation_utilisation(cons_client: ConsumptionManagementClient, order_id: str, reservation_id: str) -> dict:
+    today = date.today()
+    start = (today - timedelta(days=30)).isoformat()
+    end = today.isoformat()
+    filter_expr = f"properties/usageDate ge '{start}' AND properties/usageDate le '{end}'"
+
+    try:
+        summaries = list(
+            cons_client.reservations_summaries.list_by_reservation_order_and_reservation(
+                reservation_order_id=order_id,
+                reservation_id=reservation_id,
+                grain="daily",
+                filter=filter_expr,
+            )
+        )
+    except Exception as exc:
+        print(
+            f"      Utilisation unavailable for reservation {reservation_id} "
+            f"(order {order_id}): {type(exc).__name__}"
+        )
+        return {
+            "utilization_pct_1_day": "",
+            "utilization_pct_7_day": "",
+            "utilization_pct_30_day": "",
+        }
+
+    if not summaries:
+        return {
+            "utilization_pct_1_day": "",
+            "utilization_pct_7_day": "",
+            "utilization_pct_30_day": "",
+        }
+
+    def _date_key(summary):
+        usage_date = getattr(summary.properties, "usage_date", None)
+        if usage_date is None:
+            return ""
+        return usage_date.isoformat() if hasattr(usage_date, "isoformat") else str(usage_date)
+
+    def _avg_util(rows):
+        vals = [
+            _to_number_or_none(getattr(row.properties, "avg_utilization_percentage", None))
+            for row in rows
+        ]
+        cleaned = [v for v in vals if v is not None]
+        if not cleaned:
+            return ""
+        return round(sum(cleaned) / len(cleaned), 2)
+
+    summaries.sort(key=_date_key)
+    return {
+        "utilization_pct_1_day": _avg_util(summaries[-1:]),
+        "utilization_pct_7_day": _avg_util(summaries[-7:]),
+        "utilization_pct_30_day": _avg_util(summaries[-30:]),
+    }
+
+
+def parse_reservation_row(tenant_id: str, order: dict, reservation: dict, run_date: str, utilisation: dict) -> dict:
     op = order.get("properties", {}) if isinstance(order.get("properties"), dict) else {}
     rp = reservation.get("properties", {}) if isinstance(reservation.get("properties"), dict) else {}
     sku = reservation.get("sku", {}) if isinstance(reservation.get("sku"), dict) else {}
@@ -265,6 +405,13 @@ def parse_reservation_row(tenant_id: str, order: dict, reservation: dict, run_da
         "billing_scope_id": _first(rp, "billingScopeId"),
         "commitment_currency": _first(rp, "purchaseCurrencyCode", "currencyCode"),
         "commitment_amount": _to_number(_first(rp, "effectivePrice", "totalAmount", "price")),
+        "utilization_pct_1_day": utilisation.get("utilization_pct_1_day", ""),
+        "utilization_pct_7_day": utilisation.get("utilization_pct_7_day", ""),
+        "utilization_pct_30_day": utilisation.get("utilization_pct_30_day", ""),
+        "deep_link_to_commitment": PORTAL_RI_LINK.format(
+            order_id=order.get("name", ""),
+            reservation_id=reservation.get("name", ""),
+        ),
         "source": "Microsoft.Capacity/reservationOrders",
         "run_date": run_date,
     }
@@ -300,12 +447,22 @@ def parse_savings_plan_row(tenant_id: str, order: dict, savings_plan: dict, run_
         "billing_scope_id": _first(sp, "billingScopeId"),
         "commitment_currency": _first(commitment, "currencyCode", "grain"),
         "commitment_amount": _to_number(_first(commitment, "amount")),
+        "utilization_pct_1_day": "",
+        "utilization_pct_7_day": "",
+        "utilization_pct_30_day": "",
+        "deep_link_to_commitment": PORTAL_SP_LINK.format(order_id=order.get("name", "")),
         "source": "Microsoft.Capacity/savingsPlanOrders",
         "run_date": run_date,
     }
 
 
-def fetch_reserved_instances(token: str, tenant_id: str, run_date: str) -> list[dict]:
+def fetch_reserved_instances(
+    token: str,
+    tenant_id: str,
+    run_date: str,
+    cons_client: ConsumptionManagementClient | None,
+    fetch_utilisation: bool,
+) -> list[dict]:
     api_versions = ["2022-11-01", "2021-10-01"]
     orders: list[dict] = []
 
@@ -349,7 +506,14 @@ def fetch_reserved_instances(token: str, tenant_id: str, run_date: str) -> list[
                 continue
             if reservation_id:
                 seen_reservation_ids.add(reservation_id)
-            rows.append(parse_reservation_row(tenant_id, order, reservation, run_date))
+            util = {
+                "utilization_pct_1_day": "",
+                "utilization_pct_7_day": "",
+                "utilization_pct_30_day": "",
+            }
+            if fetch_utilisation and cons_client is not None and reservation_id:
+                util = fetch_reservation_utilisation(cons_client, order_id, reservation_id)
+            rows.append(parse_reservation_row(tenant_id, order, reservation, run_date, util))
 
     return rows
 
@@ -403,13 +567,13 @@ def fetch_savings_plans(token: str, tenant_id: str, run_date: str) -> list[dict]
     return rows
 
 
-def write_csv(path: Path, rows: list[dict]) -> None:
+def write_csv(path: Path, rows: list[dict], columns: list[str], delimiter: str = ";") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS, delimiter=";")
+        writer = csv.DictWriter(handle, fieldnames=columns, delimiter=delimiter)
         writer.writeheader()
         for row in rows:
-            writer.writerow({k: _to_csv_value(row.get(k, "")) for k in CSV_COLUMNS})
+            writer.writerow({k: _to_csv_value(row.get(k, "")) for k in columns})
     print(f"  Wrote CSV: {path}")
 
 
@@ -418,6 +582,33 @@ def write_json(path: Path, rows: list[dict]) -> None:
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(rows, handle, indent=2)
     print(f"  Wrote JSON: {path}")
+
+
+def commitment_row_to_legacy_ri_row(row: dict) -> dict:
+    applied_scope_type = str(row.get("applied_scope_type", "") or "")
+    applied_scopes = row.get("applied_scopes", "")
+    scope_label, scope_sub, scope_rg = _scope_parts(applied_scope_type, applied_scopes.split("|") if isinstance(applied_scopes, str) else applied_scopes)
+
+    return {
+        "Name": row.get("display_name", "") or row.get("commitment_id", ""),
+        "Reservation Id": row.get("commitment_id", ""),
+        "Reservation order Id": row.get("order_id", ""),
+        "Status": row.get("status", ""),
+        "Expiration date": row.get("expiration_date", ""),
+        "Purchase date": row.get("purchase_date", ""),
+        "Term": row.get("term", ""),
+        "Scope": scope_label,
+        "Scope subscription": scope_sub,
+        "Scope resource group": scope_rg,
+        "Type": row.get("reserved_resource_type", ""),
+        "Product name": row.get("sku_description", "") or row.get("sku_name", ""),
+        "Region": row.get("region", ""),
+        "Quantity": row.get("quantity", ""),
+        "Utilization % 1 Day": row.get("utilization_pct_1_day", ""),
+        "Utilization % 7 Day": row.get("utilization_pct_7_day", ""),
+        "Utilization % 30 Day": row.get("utilization_pct_30_day", ""),
+        "Deep link to reservation": row.get("deep_link_to_commitment", ""),
+    }
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -429,6 +620,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--input",
         metavar="PATH",
         help="Path to customer JSON file (expects .azure[] with tenant/subscription entries).",
+    )
+    parser.add_argument(
+        "--no-utilisation",
+        action="store_true",
+        help="Skip RI utilisation fetch (faster, utilisation fields remain blank).",
+    )
+    parser.add_argument(
+        "--skip-login",
+        action="store_true",
+        help="Compatibility no-op; accepted for wrapper parity with other extractors.",
     )
     parser.add_argument(
         "--tenant-id",
@@ -496,12 +697,19 @@ def main() -> None:
                     sp_certificate=args.sp_certificate,
                 )
                 token = get_token(credential)
+                cons_client = _build_consumption_client(credential) if not args.no_utilisation else None
             except Exception as exc:
                 print(f"  Skipping tenant due to auth error: {exc}")
                 continue
 
             try:
-                ri_rows = fetch_reserved_instances(token, tenant_id, run_date)
+                ri_rows = fetch_reserved_instances(
+                    token,
+                    tenant_id,
+                    run_date,
+                    cons_client=cons_client,
+                    fetch_utilisation=not args.no_utilisation,
+                )
             except requests.HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else "?"
                 print(f"  Reserved Instances query failed (HTTP {status})")
@@ -527,9 +735,16 @@ def main() -> None:
             sp_certificate=args.sp_certificate,
         )
         token = get_token(credential)
+        cons_client = _build_consumption_client(credential) if not args.no_utilisation else None
         tenant_label = args.tenant_id or "current"
 
-        ri_rows = fetch_reserved_instances(token, tenant_label, run_date)
+        ri_rows = fetch_reserved_instances(
+            token,
+            tenant_label,
+            run_date,
+            cons_client=cons_client,
+            fetch_utilisation=not args.no_utilisation,
+        )
         sp_rows = fetch_savings_plans(token, tenant_label, run_date)
         all_rows.extend(ri_rows)
         all_rows.extend(sp_rows)
@@ -553,9 +768,21 @@ def main() -> None:
     json_path = out_dir / f"{base}.json"
 
     if args.output_format in ("csv", "both"):
-        write_csv(csv_path, deduped)
+        write_csv(csv_path, deduped, CSV_COLUMNS, delimiter=";")
     if args.output_format in ("json", "both"):
         write_json(json_path, deduped)
+
+    # Also write a legacy RI-only export so existing RI dashboard consumers keep working.
+    legacy_ri_rows = [commitment_row_to_legacy_ri_row(r) for r in deduped if r.get("commitment_type") == "ReservedInstance"]
+    if legacy_ri_rows:
+        legacy_base = f"{label}_reserved_instances_{run_date}_{run_date}"
+        legacy_csv_path = out_dir / f"{legacy_base}.csv"
+        legacy_json_path = out_dir / f"{legacy_base}.json"
+
+        if args.output_format in ("csv", "both"):
+            write_csv(legacy_csv_path, legacy_ri_rows, LEGACY_RI_COLUMNS, delimiter=",")
+        if args.output_format in ("json", "both"):
+            write_json(legacy_json_path, legacy_ri_rows)
 
     if args.json:
         print(json.dumps(deduped, indent=2))

@@ -21,7 +21,7 @@ cd helperscripts
 python managedServiceWrapper.py -c CUST
 ```
 
-This runs all extraction scripts for the CUST customer and generates reports in `../reports/CUST_<timestamp>/`.
+This runs all extraction scripts for the CUST customer and generates reports in `../reports/CUST/`.
 
 ---
 
@@ -53,7 +53,7 @@ Minimum roles required for each script:
 |--------|---------------|-------|
 | `get_subscriptions.py` | Reader | Subscription |
 | `get_daily_costs.py` | Cost Management Reader | Subscription |
-| `get_reserved_instances.py` | Reader | Subscription |
+| `get_reservations_commitments.py` | Reader | Tenant |
 | `get_virtualmachines.py` | Reader | Subscription |
 | `get_containerApps.py` | Reader | Subscription |
 | `get_appserviceplans.py` | Reader | Subscription |
@@ -149,12 +149,12 @@ DATE FILTERING (Forwarded to cost and metrics scripts):
 
 RESERVED INSTANCES:
   --no-utilisation
-        Skip RI utilisation fetch (speeds up run if not needed).
+  Skip RI utilisation fetch in get_reservations_commitments (speeds up run if not needed).
 
 SELECTIVE EXECUTION:
   --skip <SCRIPT1> [SCRIPT2] ...
         Skip specific scripts by name (without .py extension).
-        Example: --skip get_daily_costs get_reserved_instances
+  Example: --skip get_daily_costs get_reservations_commitments
 
   --only <SCRIPT1> [SCRIPT2] ...
         Run ONLY the listed scripts. Overrides --skip.
@@ -183,7 +183,7 @@ python managedServiceWrapper.py -c CUST \
 
 # Service Principal with certificate
 python managedServiceWrapper.py -c CUST \
-  --sp-client-id   --sp-client-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
+  --sp-client-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
   --sp-certificate /path/to/cert.pem
 
 # Skip RI utilisation (faster for cost-only runs)
@@ -192,8 +192,8 @@ python managedServiceWrapper.py -c CUST --no-utilisation
 # Run only cost and VM data
 python managedServiceWrapper.py -c CUST --only get_daily_costs get_virtualmachines
 
-# Run all except costs and reserved instances
-python managedServiceWrapper.py -c CUST --skip get_daily_costs get_reserved_instances
+# Run all except costs and reservations commitments
+python managedServiceWrapper.py -c CUST --skip get_daily_costs get_reservations_commitments
 
 # Already logged in to all tenants, so skip login
 python managedServiceWrapper.py -c CUST --skip-login
@@ -223,14 +223,15 @@ When --storage-connection-string is not provided, behavior is unchanged and file
 
 #### Output Structure
 
-Each wrapper run creates a timestamped directory:
+Wrapper output is written to a stable per-customer directory:
 ```
 reports/
-└── CUST_20260508_1430/
+└── CUST/
     ├── CUST_log.txt                                    # Full execution log
     ├── subscriptions_CUST.csv                          # All subscriptions
     ├── daily_costs_by_resource_CUST_2026-04-01_2026-05-07.csv
-    ├── reserved_instances_CUST.csv
+    ├── CUST_reservations_commitments_2026-05-08_2026-05-08.csv
+    ├── CUST_reserved_instances_2026-05-08_2026-05-08.csv   # Legacy RI-compatible export
     ├── virtualmachines_CUST.csv
     ├── container_apps_metrics_CUST_2026-05-01_2026-05-07.csv
     ├── appservice_plans_metrics_CUST_2026-05-01_2026-05-07.csv
@@ -280,19 +281,22 @@ python get_daily_costs.py -i ../customers/CUST.json \
   --sp-client-id <APP_ID> --sp-client-secret <SECRET> --skip-login
 ```
 
-#### get_reserved_instances.py
-Analyzes reserved instance recommendations and utilization.
+#### get_reservations_commitments.py
+Exports a unified commitments inventory (Reserved Instances + Savings Plans) and includes RI utilisation fields.
 
 ```bash
 # Standard run
-python get_reserved_instances.py -i ../customers/CUST.json
+python get_reservations_commitments.py -i ../customers/CUST.json
 
 # Skip utilisation calculations (faster)
-python get_reserved_instances.py -i ../customers/CUST.json --no-utilisation
+python get_reservations_commitments.py -i ../customers/CUST.json --no-utilisation
 
 # Service Principal
-python get_reserved_instances.py -i ../customers/CUST.json \
+python get_reservations_commitments.py -i ../customers/CUST.json \
   --sp-client-id <APP_ID> --sp-client-secret <SECRET> --skip-login
+
+# Also emits legacy RI advisor files for compatibility:
+#   <LABEL>_reserved_instances_<DATE>_<DATE>.csv/.json
 ```
 
 #### get_virtualmachines.py
@@ -381,7 +385,7 @@ Interactive HTML dashboards for visualizing extracted data. Located in `dashboar
 | **appServicePlan.html** | App Service Plans CPU, memory, request rates by tier | `appservice_plans_metrics_*.csv` |
 | **eventhubs.html** | Event Hub throughput, consumer lag, partition metrics | `eventhub_namespaces_metrics_*.csv` |
 | **virtualMachines.html** | VM inventory, sizing recommendations, performance by size | `virtualmachines_*.csv` |
-| **reservedInstances.html** | RI recommendations, savings analysis, commitment terms | `reserved_instances_*.csv` |
+| **reservedInstances.html** | RI recommendations, savings analysis, commitment terms | `*_reserved_instances_*.csv` (emitted by `get_reservations_commitments.py`) |
 | **cosmos.html** | Cosmos DB RU reservation and scaling analysis | Integrated cost analysis |
 | **devops.html** | Azure DevOps pipeline health and execution metrics | Azure DevOps REST API |
 | **healthChecks.html** | Service health status and availability monitoring | Azure Service Health API |

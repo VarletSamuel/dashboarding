@@ -16,8 +16,8 @@ stops and prints a consolidated remediation guide plus a detailed error log.
 Scripts run (in order):
     1. get_subscriptions.py
     2. get_daily_costs.py
-    3. get_reserved_instances.py
-    4. get_reservations_commitments.py
+    3. get_reservations_commitments.py
+    4. get_quota_consumption_trends.py
     5. get_virtualmachines.py
     6. get_containerApps.py
     7. get_appserviceplans.py
@@ -25,7 +25,9 @@ Scripts run (in order):
     9. get_keyvaults.py
     10. check_app_secrets_expiry.py
     11. get_postgresql.py
-    12. get_eventhubnamespaces.py
+    12. get_sql.py
+    13. get_eventhubnamespaces.py
+    14. get_loganalyticsworkspace.py
 
 Extractor scripts are expected in the sibling `extractor/` folder.
 Output is written to <output-dir>/<CUSTOMER>/.
@@ -36,7 +38,7 @@ Usage
     python managedServiceWrapper.py -c CUST -i ../customers/CUST.json --output-dir ../reports
     python managedServiceWrapper.py -c CUST --from 2026-02-01 --to 2026-04-20
     python managedServiceWrapper.py -c CUST --lookback PT6H
-    python managedServiceWrapper.py -c CUST --skip get_subscriptions get_daily_costs get_reserved_instances get_reservations_commitments get_virtualmachines get_containerApps get_appserviceplans get_storage_accounts get_keyvaults check_app_secrets_expiry get_postgresql get_eventhubnamespaces
+    python managedServiceWrapper.py -c CUST --skip get_subscriptions get_daily_costs get_reservations_commitments get_quota_consumption_trends get_virtualmachines get_containerApps get_appserviceplans get_storage_accounts get_keyvaults check_app_secrets_expiry get_postgresql get_sql get_eventhubnamespaces get_loganalyticsworkspace
     python managedServiceWrapper.py -c CUST --skip-login
     python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-client-secret <secret>
     python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-certificate /path/to/cert.pem
@@ -168,6 +170,39 @@ def read_customer_json(json_path: Path) -> dict:
     """Return the full parsed customer JSON dict."""
     with open(json_path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def filter_active_azure_entries(customer_data: dict) -> tuple[dict, int, int]:
+    """Return customer data containing only azure entries with status=Active.
+
+    Entries with a status different from Active (case-insensitive) are skipped.
+    """
+    azure_entries = customer_data.get("azure", [])
+    if not isinstance(azure_entries, list):
+        return customer_data, 0, 0
+
+    total_entries = len(azure_entries)
+    active_entries = []
+
+    for entry in azure_entries:
+        if not isinstance(entry, dict):
+            continue
+        status = str(entry.get("status", "")).strip().lower()
+        if status == "active":
+            active_entries.append(entry)
+
+    filtered = dict(customer_data)
+    filtered["azure"] = active_entries
+    return filtered, total_entries, len(active_entries)
+
+
+def write_filtered_customer_json(filtered_data: dict, out_dir: Path, customer: str) -> Path:
+    """Write filtered customer JSON used by downstream extractors."""
+    filtered_path = out_dir / f"{customer}_active.json"
+    with open(filtered_path, "w", encoding="utf-8") as handle:
+        json.dump(filtered_data, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+    return filtered_path
 
 
 def az_login_tenant(
@@ -446,6 +481,45 @@ def _download_manifest_from_blob(
         return {}
 
 
+def run_manifest_upload_script(
+    report_dir: Path,
+    connection_input: str,
+    container_name: str,
+    blob_prefix: str,
+) -> bool:
+    """Run upload_manifest_reports.py and return True on success."""
+    upload_script = SCRIPT_DIR / "upload_manifest_reports.py"
+    if not upload_script.exists():
+        _print_warning(f"  ⚠  Upload script not found: {upload_script}")
+        return False
+
+    cmd = [
+        sys.executable,
+        str(upload_script),
+        str(report_dir),
+        "--connection-string",
+        connection_input,
+        "--container",
+        container_name,
+        "--prefix",
+        blob_prefix,
+    ]
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_child_env(),
+    )
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+    if result.stderr:
+        sys.stderr.write(_colorize(result.stderr, RED))
+    return result.returncode == 0
+
+
 def run_dependency_preflight(selected_scripts: list[tuple[str, str, list[str]]]) -> tuple[bool, dict]:
     report: dict = {
         "python_executable": sys.executable,
@@ -569,7 +643,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run all managed-service reporting scripts for a customer.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-    add_help=False,
+        add_help=False,
     usage="""%(prog)s\n  -c CUSTOMER\n  [-i INPUT]\n  [--output-dir OUTPUT_DIR]\n  [--output-format {csv,json,both}]\n  [--storage-connection-string CONNECTION_STRING]\n  [--storage-container CONTAINER]\n  [--storage-prefix PREFIX]\n  [--skip-login]\n  [--sp-client-id APP_ID]\n  [--sp-client-secret SECRET]\n  [--sp-certificate CERT_PATH]\n  [--from DATE_FROM]\n  [--to DATE_TO]\n  [--lookback LOOKBACK]\n  [--no-utilisation]\n  [--skip SCRIPT [SCRIPT ...]]\n  [--only SCRIPT [SCRIPT ...]]""",
         epilog="""
 examples:
@@ -577,7 +651,7 @@ examples:
         %(prog)s -c CUST -i ../customers/CUST.json --output-dir ./reports
   %(prog)s -c CUST --from 2026-02-01 --to 2026-04-20
   %(prog)s -c CUST --lookback PT6H
-      %(prog)s -c CUST --skip get_subscriptions get_reserved_instances get_eventhubnamespaces
+    %(prog)s -c CUST --skip get_subscriptions get_reservations_commitments get_eventhubnamespaces
   %(prog)s -c CUST --skip-login
         """,
     )
@@ -615,8 +689,8 @@ examples:
     parser.add_argument(
         "--storage-connection-string",
         default=None,
-        help="Optional Azure Storage connection string containing a SAS token. "
-             "When provided, generated files are also uploaded to blob storage.",
+           help="Optional storage auth input for upload stage. Accepts either a "
+               "SAS URL or a connection string containing SharedAccessSignature.",
     )
     parser.add_argument(
         "--storage-container",
@@ -661,12 +735,14 @@ examples:
     parser.add_argument(
         "--from", dest="date_from", default=None,
            help="Start date YYYY-MM-DD (forwarded to get_daily_costs, "
+               "get_quota_consumption_trends, "
                "get_eventhubnamespaces, get_containerApps, get_appserviceplans, get_postgresql). "
                "Default: first day of previous month.",
     )
     parser.add_argument(
         "--to", dest="date_to", default=None,
            help="End date YYYY-MM-DD (forwarded to get_daily_costs, "
+               "get_quota_consumption_trends, "
                "get_eventhubnamespaces, get_containerApps, get_appserviceplans, get_postgresql). "
                "Default: today.",
     )
@@ -678,11 +754,11 @@ examples:
                "Overrides the default date window for those metrics scripts when --from/--to are not set.",
     )
 
-    # ── Reserved Instances ────────────────────────────────────────────────────
+    # ── Reservations / commitments ────────────────────────────────────────────
     parser.add_argument(
         "--no-utilisation",
         action="store_true",
-        help="Skip RI utilisation fetch in get_reserved_instances (faster run).",
+        help="Skip RI utilisation fetch in get_reservations_commitments (faster run).",
     )
 
     # ── Selective execution ───────────────────────────────────────────────────
@@ -692,9 +768,11 @@ examples:
         metavar="SCRIPT",
         default=[],
         help="One or more script names to skip (without .py extension). "
-               "Choices: get_subscriptions  get_daily_costs  get_reserved_instances  get_reservations_commitments  "
+             "Choices: get_subscriptions  get_daily_costs  get_reservations_commitments  "
+               "get_quota_consumption_trends  "
                "get_virtualmachines  get_containerApps  get_appserviceplans  get_storage_accounts  "
-               "get_keyvaults  check_app_secrets_expiry  get_postgresql  get_eventhubnamespaces",
+               "get_keyvaults  check_app_secrets_expiry  get_postgresql  get_sql  get_eventhubnamespaces  "
+               "get_loganalyticsworkspace",
     )
     parser.add_argument(
         "--only",
@@ -714,7 +792,7 @@ def main() -> None:
     args = parser.parse_args()
 
     customer = args.customer.upper()
-    customer_csv_path = resolve_customer_csv(customer, args.input)
+    customer_json_path = resolve_customer_csv(customer, args.input)
     output_root = Path(args.output_dir) if args.output_dir else (SCRIPT_DIR.parent / "reports")
 
     # ── Stable output directory per customer ─────────────────────────────────
@@ -729,12 +807,28 @@ def main() -> None:
 
     _banner("Managed Service Wrapper")
     print(f"  Customer    : {customer}")
-    print(f"  Input file  : {customer_csv_path}")
+    print(f"  Input file  : {customer_json_path}")
     print(f"  Output dir  : {out_dir}")
     print(f"  Run date    : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
 
+    # ── Read + filter customer JSON based on azure status ─────────────────────
+    customer_data = read_customer_json(customer_json_path)
+    filtered_customer_data, total_azure_entries, active_azure_entries = filter_active_azure_entries(customer_data)
+    skipped_azure_entries = max(total_azure_entries - active_azure_entries, 0)
+
+    print(
+        f"  Azure scope : {active_azure_entries}/{total_azure_entries} active "
+        f"({skipped_azure_entries} skipped by status)"
+    )
+
+    if active_azure_entries == 0:
+        _print_error("ERROR: No active azure subscriptions found in customer JSON.")
+        sys.exit(1)
+
+    filtered_customer_json_path = write_filtered_customer_json(filtered_customer_data, out_dir, customer)
+    print(f"  Active file : {filtered_customer_json_path}")
+
     # ── Auto-read AppReg client_id from JSON if not given on CLI ──────────────
-    customer_data = read_customer_json(customer_csv_path)
     json_client_id = (customer_data.get("authentication") or {}).get("client_id", "")
     if json_client_id and not args.sp_client_id and (args.sp_client_secret or args.sp_certificate):
         args.sp_client_id = json_client_id
@@ -742,7 +836,7 @@ def main() -> None:
     elif json_client_id and not args.sp_client_id:
         print(f"  App Reg     : {json_client_id} (available in customer JSON, not used without secret/certificate)")
 
-    tenant_ids = read_tenants(customer_csv_path)
+    tenant_ids = read_tenants(filtered_customer_json_path)
 
     # ── Tenant login ──────────────────────────────────────────────────────────
     if not args.skip_login:
@@ -759,7 +853,7 @@ def main() -> None:
 
     # ── Argument sets forwarded to each script ────────────────────────────────
     common = [
-        "-i", str(customer_csv_path),
+        "-i", str(filtered_customer_json_path),
         "--skip-login",
         "--output-dir", str(out_dir),
         "--output-format", args.output_format,
@@ -790,14 +884,14 @@ def main() -> None:
     if args.lookback and not args.date_from and not args.date_to:
         lookback_args = ["--lookback", args.lookback]
 
-    ri_extra: list[str] = ["--no-utilisation"] if args.no_utilisation else []
+    commitments_extra: list[str] = ["--no-utilisation"] if args.no_utilisation else []
 
     # ── Script registry: (stem, display_label, extra_args) ───────────────────
     script_registry: list[tuple[str, str, list[str]]] = [
         ("get_subscriptions",      "Subscriptions",        []),
         ("get_daily_costs",        "Daily Costs",          date_args),
-        ("get_reserved_instances", "Reserved Instances",    ri_extra),
-        ("get_reservations_commitments", "Reservations Commitments", []),
+        ("get_reservations_commitments", "Reservations Commitments", commitments_extra),
+        ("get_quota_consumption_trends", "Quota Consumption Trends", date_args),
         ("get_virtualmachines",    "Virtual Machines",      lookback_args if lookback_args else date_args),
         ("get_containerApps",      "Container Apps",        lookback_args if lookback_args else date_args),
         ("get_appserviceplans",    "App Service Plans",     lookback_args if lookback_args else date_args),
@@ -805,7 +899,9 @@ def main() -> None:
         ("get_keyvaults",          "Key Vaults",            []),
         ("check_app_secrets_expiry","App Secret Expiry",     []),
         ("get_postgresql",         "PostgreSQL",            lookback_args if lookback_args else date_args),
+        ("get_sql",                "Azure SQL",             lookback_args if lookback_args else date_args),
         ("get_eventhubnamespaces", "Event Hub Namespaces",  lookback_args if lookback_args else date_args),
+        ("get_loganalyticsworkspace", "Log Analytics Workspaces", lookback_args if lookback_args else date_args),
     ]
 
     # ── Apply --only / --skip filters ─────────────────────────────────────────
@@ -919,22 +1015,22 @@ def main() -> None:
     except Exception as exc:
         _print_warning(f"  ⚠  Manifest generation failed; continuing without it: {exc}")
 
-    # ── Blob upload (includes manifest.json) ──────────────────────────────────
+    # ── Blob upload (manifest-referenced files) ───────────────────────────────
     if args.storage_connection_string and blob_prefix is not None:
         _banner("Blob Upload")
         print(f"  Container  : {args.storage_container}")
         print(f"  Prefix     : {blob_prefix}")
         try:
-            uploaded = upload_directory_to_blob_storage(
-                source_dir=out_dir,
-                connection_string=args.storage_connection_string,
+            success = run_manifest_upload_script(
+                report_dir=out_dir,
+                connection_input=args.storage_connection_string,
                 container_name=args.storage_container,
                 blob_prefix=blob_prefix,
             )
-            if uploaded:
-                _print_success(f"  ✓  Uploaded {uploaded} file(s) to Azure Blob Storage")
+            if success:
+                _print_success("  ✓  Manifest upload stage completed")
             else:
-                _print_warning("  ⚠  No files were found to upload")
+                _print_warning("  ⚠  Manifest upload stage failed")
         except Exception as exc:
             _print_warning(f"  ⚠  Blob upload failed; local files are preserved: {exc}")
 
