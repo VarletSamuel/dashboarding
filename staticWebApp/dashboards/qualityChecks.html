@@ -27,8 +27,8 @@
   </button>
   <h1>Azure QC Dashboard</h1>
   <p>
-    Upload Key Vault, Storage Account, App Service Plan, and/or SQL QC CSVs exported by
-    <code>azure_quality_check.py</code>.<br>
+    Upload Key Vault, Storage Account, App Service Plan, and/or SQL summary CSVs exported by
+    the extractor scripts.<br>
     Files are parsed entirely in your browser — nothing is uploaded to any server.
   </p>
 
@@ -39,7 +39,7 @@
   </div>
   <div id="fileStatusList" style="display:none"></div>
   <input type="file" id="fileInputMain" accept=".csv" multiple
-         title="Expected files: *_qc_storage_*.csv, *_qc_keyvault_*.csv, *_qc_appserviceplan_*.csv, *_qc_sqlserver_*.csv, *_qc_sqldatabase_*.csv">
+      title="Expected files: *_keyvaults_summary_*.csv, *_storage_accounts_summary_*.csv, *_app_service_plans_summary_*.csv, *_sql_summary_*.csv">
   <div id="errorMsg" style="display:none"></div>
   <div id="loadingMsg" style="display:none">⏳ Parsing…</div>
   <button id="buildDashBtn" class="btn" style="display:none;margin-top:12px">Build Dashboard →</button>
@@ -69,6 +69,26 @@
   </div>
 
   <div class="filter-bar" id="filterBar"></div>
+
+  <!-- ── Top section: Security score by subscription ── -->
+  <div class="env-section" id="sect-security-scores">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+      <div class="env-icon">▼</div>
+      <h2>Security Score by Subscription</h2>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full">
+          <div class="card">
+            <div style="overflow-x:auto">
+              <table class="summary-table" id="securityScoreTable"></table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="kpi-row"   id="kpis"></div>
 
   <!-- ── Subscription summary ── -->
@@ -304,12 +324,96 @@ function parseQcCsv(text) {
 }
 
 function detectCsvType(header) {
-  if (header.includes('vault_uri'))            return 'kv';
-  if (header.includes('enc_blob_enabled'))     return 'st';
-  if (header.includes('apps_count'))           return 'asp';
-  if (header.includes('minimal_tls_version'))  return 'sqlsrv';
-  if (header.includes('tde_enabled'))          return 'sqldb';
+  if (header.includes('key_vault_name') || header.includes('vault_uri')) return 'kv';
+  if (header.includes('storage_account_name')) return 'st';
+  if (header.includes('plan_name') || header.includes('apps_count')) return 'asp';
+  if (header.includes('server_name') && header.includes('database_name')) return 'sql';
+  if (header.includes('minimal_tls_version') && !header.includes('database_name')) return 'sqlsrv';
+  if (header.includes('qc_tde_enabled') || header.includes('tde_enabled')) return 'sqldb';
   return null;
+}
+
+function boolString(value) {
+  return String(value || '').trim().toLowerCase() === 'true' ? 'True' : 'False';
+}
+
+function normalizeByType(type, records) {
+  if (type === 'kv') {
+    return records.map(r => ({
+      ...r,
+      name: r.name || r.key_vault_name || '',
+      sku: r.sku || r.sku_name || '',
+      qc_soft_delete_enabled: boolString(r.qc_soft_delete_enabled ?? r.soft_delete_enabled),
+      qc_purge_protection_enabled: boolString(r.qc_purge_protection_enabled ?? r.purge_protection_enabled),
+      qc_rbac_authorization: boolString(r.qc_rbac_authorization ?? r.enable_rbac_authorization),
+      qc_network_restricted: boolString(r.qc_network_restricted ?? (String(r.default_action || '').toLowerCase() === 'deny')),
+      qc_private_endpoint_configured: boolString(r.qc_private_endpoint_configured ?? ((parseInt(r.private_endpoint_count, 10) || 0) > 0)),
+      qc_soft_delete_90_days: boolString(r.qc_soft_delete_90_days ?? ((parseInt(r.soft_delete_retention_days, 10) || 0) >= 90)),
+      qc_has_tags: boolString(r.qc_has_tags ?? Boolean(r.tags)),
+    }));
+  }
+
+  if (type === 'st') {
+    return records.map(r => ({
+      ...r,
+      name: r.name || r.storage_account_name || '',
+      qc_https_only: boolString(r.qc_https_only ?? r.https_only),
+      qc_tls_12_or_higher: boolString(r.qc_tls_12_or_higher ?? ['tls1_2', 'tls1_3', 'tls12', 'tls13'].includes(String(r.minimum_tls_version || '').toLowerCase())),
+      qc_no_public_blob_access: boolString(r.qc_no_public_blob_access ?? (String(r.public_network_access_enabled || '').toLowerCase() !== 'true')),
+      qc_shared_key_disabled: boolString(r.qc_shared_key_disabled ?? (String(r.shared_access_key_enabled || '').toLowerCase() !== 'true')),
+      qc_network_restricted: boolString(r.qc_network_restricted ?? (String(r.default_action || '').toLowerCase() === 'deny')),
+      qc_soft_delete_enabled: boolString(r.qc_soft_delete_enabled ?? ((parseInt(r.blob_soft_delete_days, 10) || 0) > 0)),
+      qc_infrastructure_encryption: boolString(r.qc_infrastructure_encryption ?? r.infrastructure_encryption_enabled),
+      qc_has_tags: boolString(r.qc_has_tags ?? Boolean(r.tags)),
+    }));
+  }
+
+  if (type === 'asp') {
+    return records.map(r => ({
+      ...r,
+      name: r.name || r.plan_name || '',
+      qc_not_free_shared: boolString(r.qc_not_free_shared ?? !['free', 'shared', 'dynamic'].includes(String(r.sku_tier || '').toLowerCase())),
+      qc_min_2_instances: boolString(r.qc_min_2_instances ?? ((parseInt(r.sku_capacity, 10) || 0) >= 2)),
+      qc_zone_redundant: boolString(r.qc_zone_redundant ?? r.zone_redundant),
+      qc_has_apps: boolString(r.qc_has_apps ?? ((parseInt(r.apps_count, 10) || 0) > 0)),
+      qc_has_tags: boolString(r.qc_has_tags ?? Boolean(r.tags)),
+    }));
+  }
+
+  if (type === 'sqlsrv') {
+    return records.map(r => ({
+      ...r,
+      name: r.name || r.server_name || '',
+      version: r.version || r.server_version || '',
+      qc_has_tags: boolString(r.qc_has_tags ?? Boolean(r.tags)),
+    }));
+  }
+
+  if (type === 'sqldb') {
+    return records.map(r => ({
+      ...r,
+      name: r.name || r.database_name || '',
+      backup_storage_redundancy: r.backup_storage_redundancy || r.current_backup_storage_redundancy || r.requested_backup_storage_redundancy || '',
+      qc_has_tags: boolString(r.qc_has_tags ?? Boolean(r.tags)),
+    }));
+  }
+
+  return records;
+}
+
+function deriveSqlServersFromSqlRows(sqlRows) {
+  const serverMap = new Map();
+  sqlRows.forEach(row => {
+    const key = row.server_id || `${row.subscription_id || ''}|${row.resource_group || ''}|${row.server_name || ''}`;
+    if (!serverMap.has(key)) {
+      serverMap.set(key, {
+        ...row,
+        name: row.server_name || '',
+        version: row.server_version || row.version || '',
+      });
+    }
+  });
+  return [...serverMap.values()];
 }
 
 // ════════════════════════════════════════════════════════════
@@ -331,12 +435,7 @@ const buildBtn  = document.getElementById('buildDashBtn');
   });
   inp.addEventListener('change', () => {
     if (!inp.files.length) return;
-    const files = [...inp.files].filter(f => {
-      if (!/_qc_/i.test(f.name))
-        return confirm(`"${f.name}" doesn't look like a Quality Check export.\nExpected a filename containing "_qc_".\n\nLoad it anyway?`);
-      return true;
-    });
-    if (files.length) handleFiles(files);
+    handleFiles(inp.files);
     inp.value = '';
   });
 })();
@@ -358,11 +457,16 @@ function handleFiles(fileList) {
         if (!records.length) throw new Error(`No data rows in “${file.name}”.`);
         const type = detectCsvType(header);
         if (!type) throw new Error(`Cannot detect type for “${file.name}” — check column names.`);
-        if (type === 'kv')     KV_ALL     = records;
-        if (type === 'st')     ST_ALL     = records;
-        if (type === 'asp')    ASP_ALL    = records;
-        if (type === 'sqlsrv') SQLSRV_ALL = records;
-        if (type === 'sqldb')  SQLDB_ALL  = records;
+        if (type === 'kv') KV_ALL = normalizeByType('kv', records);
+        if (type === 'st') ST_ALL = normalizeByType('st', records);
+        if (type === 'asp') ASP_ALL = normalizeByType('asp', records);
+        if (type === 'sqlsrv') SQLSRV_ALL = normalizeByType('sqlsrv', records);
+        if (type === 'sqldb') SQLDB_ALL = normalizeByType('sqldb', records);
+        if (type === 'sql') {
+          const dbRows = normalizeByType('sqldb', records);
+          SQLDB_ALL = dbRows;
+          SQLSRV_ALL = normalizeByType('sqlsrv', deriveSqlServersFromSqlRows(dbRows));
+        }
       } catch (err) {
         errors.push(err.message);
       }
@@ -452,8 +556,11 @@ const filteredSQLDB  = () => ACTIVE_SUBS.size ? SQLDB_ALL.filter(r  => ACTIVE_SU
 function renderAll() {
   const kv = filteredKV(), st = filteredST(), asp = filteredASP();
   const sqlsrv = filteredSQLSRV(), sqldb = filteredSQLDB();
+  renderSecurityScoreTable(kv, st, asp, sqlsrv, sqldb);
   renderKpis(kv, st, asp, sqlsrv, sqldb);
   renderSummaryTable(kv, st, asp, sqlsrv, sqldb);
+  document.getElementById('sect-security-scores').style.display =
+    (KV_ALL.length || ST_ALL.length || ASP_ALL.length || SQLSRV_ALL.length || SQLDB_ALL.length) ? '' : 'none';
   document.getElementById('sect-kv').style.display     = KV_ALL.length     ? '' : 'none';
   document.getElementById('sect-st').style.display     = ST_ALL.length     ? '' : 'none';
   document.getElementById('sect-asp').style.display    = ASP_ALL.length    ? '' : 'none';
@@ -564,6 +671,67 @@ function calcScore(records, checks) {
   return pct(pass, records.length * checks.length);
 }
 
+function calcOverallSubScore(kvSub, stSub, aspSub, sqlsrvSub, sqldbSub) {
+  let pass = 0;
+  let total = 0;
+  kvSub.forEach(r => KV_CHECKS.forEach(c => { total++; if (bv(r, c.col)) pass++; }));
+  stSub.forEach(r => ST_CHECKS.forEach(c => { total++; if (bv(r, c.col)) pass++; }));
+  aspSub.forEach(r => ASP_CHECKS.forEach(c => { total++; if (bv(r, c.col)) pass++; }));
+  sqlsrvSub.forEach(r => SQLSRV_CHECKS.forEach(c => { total++; if (bv(r, c.col)) pass++; }));
+  sqldbSub.forEach(r => SQLDB_CHECKS.forEach(c => { total++; if (bv(r, c.col)) pass++; }));
+  return {
+    score: pct(pass, total),
+    pass,
+    total,
+  };
+}
+
+function renderSecurityScoreTable(kv, st, asp, sqlsrv, sqldb) {
+  const el = document.getElementById('securityScoreTable');
+  const allSubs = [...new Set([...kv, ...st, ...asp, ...sqlsrv, ...sqldb]
+    .map(r => r.subscription_name || r.subscription_id)
+    .filter(Boolean))].sort();
+
+  if (!allSubs.length) {
+    el.innerHTML = '';
+    return;
+  }
+
+  const rows = allSubs.map(sub => {
+    const kvSub = kv.filter(r => (r.subscription_name || r.subscription_id) === sub);
+    const stSub = st.filter(r => (r.subscription_name || r.subscription_id) === sub);
+    const aspSub = asp.filter(r => (r.subscription_name || r.subscription_id) === sub);
+    const sqlsrvSub = sqlsrv.filter(r => (r.subscription_name || r.subscription_id) === sub);
+    const sqldbSub = sqldb.filter(r => (r.subscription_name || r.subscription_id) === sub);
+    const overall = calcOverallSubScore(kvSub, stSub, aspSub, sqlsrvSub, sqldbSub);
+    return {
+      sub,
+      resources: kvSub.length + stSub.length + aspSub.length + sqlsrvSub.length + sqldbSub.length,
+      score: overall.score,
+      pass: overall.pass,
+      total: overall.total,
+    };
+  }).sort((a, b) => b.score - a.score || a.sub.localeCompare(b.sub, undefined, { sensitivity: 'base' }));
+
+  let html = `<thead><tr>
+    <th>Subscription</th>
+    <th class="num">Resources</th>
+    <th class="num">Security Score</th>
+    <th class="num">Passed Checks</th>
+  </tr></thead><tbody>`;
+
+  rows.forEach(row => {
+    html += `<tr>
+      <td><strong>${row.sub}</strong></td>
+      <td class="num">${row.resources}</td>
+      <td class="num"><span class="sbadge lvl-${lvl(row.score)}">${row.score}%</span></td>
+      <td class="num" style="color:var(--text-dim)">${row.pass} / ${row.total}</td>
+    </tr>`;
+  });
+
+  el.innerHTML = html + '</tbody>';
+}
+
 function renderKpis(kv, st, asp, sqlsrv, sqldb) {
   const el = document.getElementById('kpis');
   const kvScore     = calcScore(kv,     KV_CHECKS);
@@ -654,13 +822,8 @@ function renderSummaryTable(kv, st, asp, sqlsrv, sqldb) {
     const sqlsrvS   = calcScore(sqlsrvSub, SQLSRV_CHECKS);
     const sqldbS    = calcScore(sqldbSub,  SQLDB_CHECKS);
     const appsTotal = aspSub.reduce((s, r) => s + (parseInt(r.apps_count, 10) || 0), 0);
-    let tp = 0, tc = 0;
-    kvSub.forEach(r     => KV_CHECKS.forEach(c     => { tc++; if (bv(r, c.col)) tp++; }));
-    stSub.forEach(r     => ST_CHECKS.forEach(c     => { tc++; if (bv(r, c.col)) tp++; }));
-    aspSub.forEach(r    => ASP_CHECKS.forEach(c    => { tc++; if (bv(r, c.col)) tp++; }));
-    sqlsrvSub.forEach(r => SQLSRV_CHECKS.forEach(c => { tc++; if (bv(r, c.col)) tp++; }));
-    sqldbSub.forEach(r  => SQLDB_CHECKS.forEach(c  => { tc++; if (bv(r, c.col)) tp++; }));
-    const ov = pct(tp, tc);
+    const overall = calcOverallSubScore(kvSub, stSub, aspSub, sqlsrvSub, sqldbSub);
+    const ov = overall.score;
     html += `<tr>
       <td><strong>${sub}</strong></td>
       ${showKv     ? `<td class="num">${kvSub.length}</td><td class="num"><span class="sbadge lvl-${lvl(kvS)}">${kvS}%</span></td>` : ''}

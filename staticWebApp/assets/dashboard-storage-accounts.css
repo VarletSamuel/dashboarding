@@ -1,0 +1,84 @@
+.storage-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.storage-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  padding: 14px;
+}
+
+.storage-card h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.storage-card .value {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.storage-card .note {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.storage-chart-wrap {
+  height: 280px;
+}
+
+.storage-table-wrap {
+  overflow-x: auto;
+}
+
+.storage-table td.wrap {
+  max-width: 380px;
+  white-space: normal;
+}
+
+.storage-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.storage-chip.ok {
+  border-color: color-mix(in srgb, var(--green) 45%, var(--border));
+  color: color-mix(in srgb, var(--green) 70%, var(--text));
+}
+
+.storage-chip.warn {
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--border));
+  color: color-mix(in srgb, var(--amber) 75%, var(--text));
+}
+
+.storage-chip.bad {
+  border-color: color-mix(in srgb, var(--red) 45%, var(--border));
+  color: color-mix(in srgb, var(--red) 72%, var(--text));
+}
+
+@media (max-width: 720px) {
+  .storage-card .value {
+    font-size: 24px;
+  }
+
+  .storage-table td.wrap {
+    max-width: 260px;
+  }
+}

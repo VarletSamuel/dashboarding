@@ -61,11 +61,12 @@ class AzureStorageClient {
         const [key, value] = part.split('=');
         if (key === 'AccountName') result.accountName = value;
         if (key === 'AccountKey') result.accountKey = value;
+        if (key === 'SharedAccessSignature') result.sasToken = value;
         if (key === 'DefaultEndpointProtocol' && value === 'https') {
           // endpoint will be constructed from AccountName
         }
       });
-      if (result.accountName && result.accountKey) {
+      if (result.accountName) {
         result.endpoint = `https://${result.accountName}.blob.core.windows.net`;
         console.log(`[AzureStorageClient.parseConnectionString] ✓ Connection string parsed: account=${result.accountName}, endpoint=${result.endpoint}`);
       } else {
@@ -78,12 +79,15 @@ class AzureStorageClient {
 
   async listContainers() {
     if (!this.parsedConnection.endpoint) throw new Error('Invalid connection string');
+
+    // Scoped SAS tokens cannot enumerate account containers; return the scoped container only.
+    if (this.parsedConnection.container) {
+      return [this.parsedConnection.container];
+    }
     
     console.log(`[AzureStorageClient.listContainers] API call: ${this.parsedConnection.endpoint}/?comp=list`);
     const url = new URL(`${this.parsedConnection.endpoint}/?comp=list`);
-    if (this.parsedConnection.sasToken) {
-      url.search = this.parsedConnection.sasToken;
-    }
+    this.appendSasToUrl(url);
 
     try {
       const response = await fetch(url.toString(), {
@@ -114,9 +118,7 @@ class AzureStorageClient {
     console.log(`[AzureStorageClient.listBlobs] API call: ${containerName}${prefix ? ` (prefix: ${prefix})` : ''}`);
     const url = new URL(`${this.parsedConnection.endpoint}/${containerName}?comp=list&restype=container`);
     if (prefix) url.searchParams.append('prefix', prefix);
-    if (this.parsedConnection.sasToken) {
-      url.search = this.parsedConnection.sasToken + (prefix ? `&prefix=${encodeURIComponent(prefix)}` : '');
-    }
+    this.appendSasToUrl(url);
 
     try {
       const response = await fetch(url.toString(), {
@@ -150,9 +152,7 @@ class AzureStorageClient {
     
     console.log(`[AzureStorageClient.downloadBlob] Downloading: ${containerName}/${fullBlobName}`);
     const url = new URL(`${this.parsedConnection.endpoint}/${containerName}/${fullBlobName}`);
-    if (this.parsedConnection.sasToken) {
-      url.search = this.parsedConnection.sasToken;
-    }
+    this.appendSasToUrl(url);
 
     try {
       const response = await fetch(url.toString(), {
@@ -176,21 +176,43 @@ class AzureStorageClient {
     }
   }
 
-  async findManifests() {
+  async findManifests(selectedFolder = '') {
     console.log(`[AzureStorageClient.findManifests] Starting manifest search...`);
     const manifests = [];
     const { container, pathPrefix } = this.parsedConnection;
 
     if (container) {
-      // Scoped SAS (container- or directory-level): go directly to manifest.json
-      // downloadBlob will automatically prepend pathPrefix
-      const manifestBlobName = 'manifest.json';
-      console.log(`[AzureStorageClient.findManifests] Scoped SAS detected → direct download: ${container}/${pathPrefix}${manifestBlobName}`);
+      // Scoped SAS: try selected folder first (container-level SAS), then fallback.
+      const manifestCandidates = [];
+      if (selectedFolder && !pathPrefix) {
+        manifestCandidates.push(`${selectedFolder}/manifest.json`);
+      } else if (selectedFolder && pathPrefix) {
+        // If SAS is already folder-scoped, only allow matching selected folder.
+        const scopedFolder = String(pathPrefix || '').replace(/\/+$/, '');
+        if (scopedFolder !== selectedFolder) {
+          console.warn(`[AzureStorageClient.findManifests] Scoped folder '${scopedFolder}' does not match selected folder '${selectedFolder}'`);
+          return manifests;
+        }
+      }
+      if (!selectedFolder || pathPrefix) {
+        manifestCandidates.push('manifest.json');
+      }
+      console.log(`[AzureStorageClient.findManifests] Scoped SAS detected → candidates: ${manifestCandidates.join(', ')}`);
       try {
-        const content = await this.downloadBlob(container, manifestBlobName);
-        const json = JSON.parse(content);
-        manifests.push({ container, blob: `${pathPrefix}${manifestBlobName}`, manifest: json });
-        console.log(`[AzureStorageClient.findManifests] ✓ Found manifest for: ${json.customer}`);
+        for (const candidate of manifestCandidates) {
+          try {
+            const content = await this.downloadBlob(container, candidate);
+            const json = JSON.parse(content);
+            manifests.push({ container, blob: `${pathPrefix || ''}${candidate}`, manifest: json });
+            console.log(`[AzureStorageClient.findManifests] ✓ Found manifest for: ${json.customer} (${candidate})`);
+            break;
+          } catch (candidateErr) {
+            console.log(`[AzureStorageClient.findManifests] Candidate not found/readable: ${candidate}`);
+            if (candidate === manifestCandidates[manifestCandidates.length - 1]) {
+              throw candidateErr;
+            }
+          }
+        }
       } catch (err) {
         console.error(`[AzureStorageClient.findManifests] ✗ Could not load manifest.json:`, err.message);
       }
@@ -229,6 +251,18 @@ class AzureStorageClient {
     }
 
     return manifests;
+  }
+
+  appendSasToUrl(url) {
+    const rawSas = (this.parsedConnection.sasToken || '').replace(/^\?/, '');
+    if (!rawSas) return;
+
+    const sasParams = new URLSearchParams(rawSas);
+    sasParams.forEach((value, key) => {
+      if (!url.searchParams.has(key)) {
+        url.searchParams.append(key, value);
+      }
+    });
   }
 
   getAuthHeaders() {
@@ -280,31 +314,278 @@ class AzureStorageClient {
 // STORAGE FILE LOADER
 // ══════════════════════════════════════════════════════════════
 
+const LOCAL_DATA_DB = 'dco-local-data';
+const LOCAL_DATA_STORE = 'datasets';
+const LOCAL_DATASET_ID_KEY = 'dco-local-dataset-id';
+const LOCAL_DATASET_ACTIVE_KEY = 'dco-local-dataset-active';
+
+function openLocalDataDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(LOCAL_DATA_DB, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(LOCAL_DATA_STORE)) {
+        db.createObjectStore(LOCAL_DATA_STORE, { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('Could not open local data database'));
+  });
+}
+
+async function readLocalDataset(datasetId) {
+  if (!datasetId) return null;
+  const db = await openLocalDataDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_DATA_STORE, 'readonly');
+    const store = tx.objectStore(LOCAL_DATA_STORE);
+    const req = store.get(datasetId);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error || new Error('Could not read local dataset'));
+  });
+}
+
+function getLocalActiveDatasetId() {
+  return localStorage.getItem(LOCAL_DATASET_ID_KEY);
+}
+
+function isLocalSourceActive() {
+  return localStorage.getItem(LOCAL_DATASET_ACTIVE_KEY) === 'true' && !!getLocalActiveDatasetId();
+}
+
+function getBasename(name) {
+  const norm = String(name || '').replace(/\\/g, '/');
+  const idx = norm.lastIndexOf('/');
+  return idx >= 0 ? norm.slice(idx + 1) : norm;
+}
+
+function findManifestInLocalDataset(dataset) {
+  const files = (dataset && dataset.files) || [];
+  const manifestFile = files.find(f => getBasename(f.name || '') === 'manifest.json');
+  if (!manifestFile || !manifestFile.content) return null;
+  try {
+    return JSON.parse(manifestFile.content);
+  } catch (err) {
+    console.warn('[storage-loader][local] Invalid manifest.json:', err.message);
+    return null;
+  }
+}
+
+function fileSortScore(name) {
+  const base = getBasename(name);
+  const compact = base.match(/_(\d{8}_\d{4})\./);
+  if (compact) return Number(compact[1].replace('_', ''));
+  const range = base.match(/_(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\./);
+  if (range) return Number(range[2].replace(/-/g, ''));
+  const day = base.match(/_(\d{4}-\d{2}-\d{2})\./);
+  if (day) return Number(day[1].replace(/-/g, ''));
+  return 0;
+}
+
+function getManifestDashboardIds(dashboardId) {
+  const aliases = {
+    quality_checks: [
+      'quality_checks',
+      'qualityChecks',
+      'keyVaults',
+      'storageAccounts',
+      'appServicePlans',
+      'sqlDatabases',
+    ],
+  };
+  return aliases[dashboardId] || [dashboardId];
+}
+
+function shouldMergeByTypeForDashboard(dashboardId) {
+  // Quality checks intentionally ingests multiple summary CSV shapes.
+  // Keep files separate so per-file schema detection continues to work.
+  return dashboardId !== 'quality_checks';
+}
+
+function inferDashboardFilesFromLocal(dashboardId, datasetFiles) {
+  const files = (datasetFiles || []).map(f => ({
+    name: getBasename(f.name || ''),
+    fullName: f.name || '',
+    content: f.content || '',
+  }));
+
+  const patterns = {
+    appServicePlans: [
+      { type: 'summary', re: /_app_service_plans_summary_/i },
+      { type: 'timeseries', re: /_app_service_plans_timeseries_/i },
+    ],
+    containerApps: [
+      { type: 'summary', re: /_container_apps_summary_/i },
+      { type: 'timeseries', re: /_container_apps_timeseries_/i },
+    ],
+    virtualMachines: [
+      { type: 'summary', re: /_virtual_machines_summary_/i },
+      { type: 'timeseries', re: /_virtual_machines_timeseries_/i },
+    ],
+    eventhubs: [
+      { type: 'summary', re: /_eventhub_summary_/i },
+      { type: 'timeseries', re: /_eventhub_timeseries_/i },
+    ],
+    postgresql: [
+      { type: 'summary', re: /_postgresql_summary_/i },
+      { type: 'timeseries', re: /_postgresql_timeseries_/i },
+    ],
+    azureCosts: [
+      { type: 'costs_by_resource', re: /_daily_costs_/i },
+    ],
+    storageAccounts: [
+      { type: 'summary', re: /_storage_accounts_summary_/i },
+    ],
+    keyVaults: [
+      { type: 'summary', re: /_keyvaults_summary_/i },
+    ],
+    appSecretExpirations: [
+      { type: 'summary', re: /_app_secret_expirations_summary_/i },
+    ],
+    cosmos: [
+      { type: 'summary', re: /_cosmos_ru_/i },
+    ],
+    reservedInstances: [
+      { type: 'summary', re: /_reserved_instances_/i },
+    ],
+    quality_checks: [
+      { type: 'summary', re: /_keyvaults_summary_/i },
+      { type: 'summary', re: /_storage_accounts_summary_/i },
+      { type: 'summary', re: /_app_service_plans_summary_/i },
+      { type: 'summary', re: /_sql_summary_/i },
+    ],
+  };
+
+  const defs = patterns[dashboardId] || [];
+  const out = [];
+
+  defs.forEach(def => {
+    const matched = files.filter(f => def.re.test(f.name));
+    if (!matched.length) return;
+
+    if (def.type === 'summary') {
+      const latest = matched.sort((a, b) => fileSortScore(b.name) - fileSortScore(a.name))[0];
+      out.push({ name: latest.name, type: 'summary', content: latest.content });
+    } else {
+      matched
+        .sort((a, b) => fileSortScore(a.name) - fileSortScore(b.name))
+        .forEach(item => out.push({ name: item.name, type: def.type, content: item.content }));
+    }
+  });
+
+  return out;
+}
+
+function matchLocalFile(files, targetName) {
+  const exact = files.find(f => getBasename(f.name || '') === targetName);
+  if (exact) return exact;
+
+  const normalizedTarget = String(targetName || '').replace(/\\/g, '/');
+  return files.find(f => String(f.name || '').replace(/\\/g, '/').endsWith(normalizedTarget));
+}
+
+async function loadLocalFilesForDashboard(dashboardId, onStep) {
+  const step = (msg) => { if (typeof onStep === 'function') onStep(msg); };
+  const datasetId = getLocalActiveDatasetId();
+  if (!datasetId) return [];
+
+  step('Reading local folder dataset…');
+  const dataset = await readLocalDataset(datasetId);
+  if (!dataset || !Array.isArray(dataset.files)) return [];
+
+  const manifest = findManifestInLocalDataset(dataset);
+  if (manifest && Array.isArray(manifest.dashboards)) {
+    const ids = new Set(getManifestDashboardIds(dashboardId));
+    const dashboards = manifest.dashboards.filter(d => ids.has(d.id));
+    const totalFiles = dashboards.reduce((sum, d) => sum + ((d.files || []).length), 0);
+    if (dashboards.length && totalFiles) {
+      step(`Loading ${totalFiles} file(s) from local manifest…`);
+      const loaded = [];
+      const seen = new Set();
+      dashboards.forEach(dashboard => {
+        dashboard.files.forEach(fileInfo => {
+          const matched = matchLocalFile(dataset.files, fileInfo.filename);
+          if (!matched) return;
+          if (!hasCsvDataRows(matched.content || '')) return;
+          const key = `${fileInfo.type}|${getBasename(matched.name || fileInfo.filename)}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          loaded.push({
+            name: getBasename(matched.name || fileInfo.filename),
+            type: fileInfo.type,
+            content: matched.content || '',
+          });
+        });
+      });
+      return loaded;
+    }
+  }
+
+  step('Inferring dashboard files from local folder contents…');
+  return inferDashboardFilesFromLocal(dashboardId, dataset.files);
+}
+
 async function initStorageFileLoader(dashboardId, onStep) {
   const step = (msg) => { if (typeof onStep === 'function') onStep(msg); };
   console.log(`🔄 [storage-loader] Initializing for dashboard: ${dashboardId}`);
-  step('Connecting to storage…');
+  step('Checking configured data source…');
   
   const STORAGE_CONFIG_KEY = 'dco-storage-connection';
+  const STORAGE_FOLDER_KEY = 'dco-storage-folder';
+  const hash = window.location.hash;
+  const hashParams = new URLSearchParams((hash || '').replace(/^#/, ''));
 
-  // Read connection from URL hash (#conn=...) first — injected by index.html when navigating.
+  if (hash.startsWith('#local=')) {
+    const localValue = decodeURIComponent(hash.slice(7));
+    if (localValue && localValue !== '1') {
+      localStorage.setItem(LOCAL_DATASET_ID_KEY, localValue);
+    }
+    localStorage.setItem(LOCAL_DATASET_ACTIVE_KEY, 'true');
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
+
+  if (isLocalSourceActive()) {
+    try {
+      step('Loading from local folder…');
+      const localFiles = await loadLocalFilesForDashboard(dashboardId, step);
+      const normalized = mergeLoadedFilesByType(localFiles || []);
+      if (normalized.length > 0) {
+        if (typeof onFilesLoaded === 'function') {
+          onFilesLoaded(normalized);
+        }
+        console.log(`✅ [storage-loader][local] Loaded ${normalized.length} file type payload(s)`);
+        return true;
+      }
+      console.log(`ℹ️ [storage-loader][local] No local files resolved for dashboard: ${dashboardId}`);
+    } catch (err) {
+      console.warn(`⚠️ [storage-loader][local] Local folder load failed: ${err.message}`);
+    }
+  }
+
+  // Read connection/folder from URL hash first — injected by index.html when navigating.
   // This is needed because file:// localStorage is scoped per-directory in some browsers.
   let connection = null;
-  const hash = window.location.hash;
-  if (hash.startsWith('#conn=')) {
-    connection = decodeURIComponent(hash.slice(6));
+  const connFromHash = hashParams.get('conn');
+  const folderFromHash = hashParams.get('folder');
+  if (connFromHash !== null) {
+    connection = connFromHash;
     // Persist locally when provided; clear local copy when hash is explicitly empty.
     if (connection) {
       localStorage.setItem(STORAGE_CONFIG_KEY, connection);
     } else {
       localStorage.removeItem(STORAGE_CONFIG_KEY);
     }
+    if (folderFromHash) {
+      localStorage.setItem(STORAGE_FOLDER_KEY, folderFromHash);
+    }
     // Remove hash from URL without triggering a reload
     history.replaceState(null, '', window.location.pathname + window.location.search);
-    console.log(`✓ [storage-loader] Connection read from URL hash and saved to localStorage`);
+    console.log(`✓ [storage-loader] Connection/folder read from URL hash and saved to localStorage`);
   } else {
     connection = localStorage.getItem(STORAGE_CONFIG_KEY);
   }
+
+  const selectedFolder = (folderFromHash || localStorage.getItem(STORAGE_FOLDER_KEY) || '').trim();
 
   if (!connection) {
     console.log(`ℹ️ [storage-loader] No storage connection configured. Using file upload UI.`);
@@ -321,7 +602,7 @@ async function initStorageFileLoader(dashboardId, onStep) {
     
     console.log(`🔍 [storage-loader] Searching for manifests...`);
     step('Looking for manifest…');
-    const manifests = await client.findManifests();
+    const manifests = await client.findManifests(selectedFolder);
     console.log(`  Found ${manifests.length} manifest(s)`);
     
     if (manifests.length === 0) {
@@ -335,11 +616,22 @@ async function initStorageFileLoader(dashboardId, onStep) {
       console.log(`  [${idx}] ${m.blob} (Customer: ${m.manifest.customer}, Dashboards: ${dashboards})`);
     });
 
-    // Find manifest that contains this dashboard
+    const candidateDashboardIds = getManifestDashboardIds(dashboardId);
+
+    // Find manifest that contains this dashboard (or one of its aliases)
     console.log(`🔎 [storage-loader] Searching for dashboard: ${dashboardId}`);
-    const relevantManifests = manifests.filter(m => {
-      return m.manifest.dashboards?.some(d => d.id === dashboardId);
+    let relevantManifests = manifests.filter(m => {
+      return m.manifest.dashboards?.some(d => candidateDashboardIds.includes(d.id));
     });
+
+    if (selectedFolder) {
+      relevantManifests = relevantManifests.filter(m => {
+        const blobPath = m.blob || '';
+        const firstPathSegment = blobPath.split('/')[0];
+        return firstPathSegment === selectedFolder || m.manifest.customer === selectedFolder;
+      });
+      console.log(`🔎 [storage-loader] Folder filter '${selectedFolder}' → ${relevantManifests.length} matching manifest(s)`);
+    }
 
     if (relevantManifests.length === 0) {
       console.log(`❌ [storage-loader] No manifest found for dashboard: ${dashboardId}`);
@@ -358,19 +650,28 @@ async function initStorageFileLoader(dashboardId, onStep) {
 
     console.log(`✓ [storage-loader] Using manifest: ${manifest.blob} (Generated: ${manifest.manifest.generated_at})`);
 
-    // Load files for this dashboard
-    const dashboard = manifest.manifest.dashboards.find(d => d.id === dashboardId);
-    if (!dashboard || !dashboard.files) {
+    // Load files for this dashboard (supports composite IDs like quality_checks)
+    const dashboards = manifest.manifest.dashboards.filter(d => candidateDashboardIds.includes(d.id));
+    const totalDashboardFiles = dashboards.reduce((sum, d) => sum + ((d.files || []).length), 0);
+    if (!dashboards.length || !totalDashboardFiles) {
       console.log(`❌ [storage-loader] No files defined in manifest for dashboard: ${dashboardId}`);
       return false;
     }
 
-    console.log(`📂 [storage-loader] Dashboard has ${dashboard.files.length} file(s):`);
-    dashboard.files.forEach(f => console.log(`   - ${f.type}: ${f.filename}`));
+    console.log(`📂 [storage-loader] Dashboard has ${totalDashboardFiles} file(s) across ${dashboards.length} manifest section(s)`);
+    dashboards.forEach(d => {
+      (d.files || []).forEach(f => console.log(`   - [${d.id}] ${f.type}: ${f.filename}`));
+    });
 
-    const loadedFiles = await loadFilesFromManifest(client, manifest, dashboard, step);
-    const normalizedFiles = mergeLoadedFilesByType(loadedFiles);
-    console.log(`✅ [storage-loader] Loaded ${loadedFiles.length} files from storage (${normalizedFiles.length} type payload(s) after merge)`);
+    const loadedFiles = [];
+    for (const dashboard of dashboards) {
+      const filesForSection = await loadFilesFromManifest(client, manifest, dashboard, step, selectedFolder);
+      loadedFiles.push(...filesForSection);
+    }
+    const normalizedFiles = shouldMergeByTypeForDashboard(dashboardId)
+      ? mergeLoadedFilesByType(loadedFiles)
+      : loadedFiles;
+    console.log(`✅ [storage-loader] Loaded ${loadedFiles.length} files from storage (${normalizedFiles.length} payload(s) after normalization)`);
 
     if (normalizedFiles.length === 0) {
       console.warn(`⚠️ [storage-loader] No valid files loaded from manifest; using upload fallback UI`);
@@ -407,24 +708,53 @@ function hasCsvDataRows(content) {
   return nonEmptyLines.length > 1;
 }
 
-async function loadFilesFromManifest(client, manifest, dashboard, onStep) {
+async function loadFilesFromManifest(client, manifest, dashboard, onStep, selectedFolder = '') {
   const step = (msg) => { if (typeof onStep === 'function') onStep(msg); };
   const files = [];
   const containerName = manifest.container;
+  const normalizedFolder = String(selectedFolder || '').trim().replace(/^\/+|\/+$/g, '');
   console.log(`📥 [storage-loader] Downloading files from container: ${containerName}`);
 
   for (const [i, fileInfo] of dashboard.files.entries()) {
     try {
       step(`Downloading file ${i + 1} of ${dashboard.files.length}…`);
-      console.log(`   ↓ Fetching ${fileInfo.type}: ${fileInfo.filename}`);
-      const content = await client.downloadBlob(containerName, fileInfo.filename);
+      const rawName = String(fileInfo.filename || '').replace(/^\/+/, '');
+      const candidates = [];
+      if (normalizedFolder && !rawName.includes('/')) {
+        candidates.push(`${normalizedFolder}/${rawName}`);
+      }
+      // In folder mode, do not fall back to root paths to prevent cross-customer data leaks.
+      if (!normalizedFolder || rawName.includes('/')) {
+        candidates.push(rawName);
+      }
+
+      console.log(`   ↓ Fetching ${fileInfo.type}: ${rawName} (candidates: ${candidates.join(', ')})`);
+
+      let content = null;
+      let resolvedName = rawName;
+      let lastError = null;
+      for (const candidate of candidates) {
+        try {
+          content = await client.downloadBlob(containerName, candidate);
+          resolvedName = candidate;
+          break;
+        } catch (candidateErr) {
+          lastError = candidateErr;
+          console.log(`   ↪ Candidate failed: ${candidate}`);
+        }
+      }
+
+      if (content === null) {
+        throw lastError || new Error(`Failed to download any candidate for ${rawName}`);
+      }
+
       if (!hasCsvDataRows(content)) {
-        console.warn(`   ⚠️ Empty CSV in manifest: ${fileInfo.filename}`);
+        console.warn(`   ⚠️ Empty CSV in manifest: ${resolvedName}`);
         throw new Error('No data rows found in CSV.');
       }
-      console.log(`   ✓ Downloaded ${fileInfo.type} (${content.length} bytes)`);
+      console.log(`   ✓ Downloaded ${fileInfo.type}: ${resolvedName} (${content.length} bytes)`);
       files.push({
-        name: fileInfo.filename,
+        name: resolvedName,
         type: fileInfo.type,
         content: content,
       });

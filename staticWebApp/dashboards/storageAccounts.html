@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Azure Storage Accounts Dashboard</title>
+<link rel="icon" type="image/png" href="../assets/delaware-dee-rgb.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/dashboard-core.css">
+<link rel="stylesheet" href="../assets/dashboard-storage-accounts.css">
+<script src="../assets/storage-loader.js"></script>
+<script src="../assets/filter-bar-helper.js"></script>
+<script>
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+</head>
+<body class="ambient-glow">
+
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+  <h1>Azure Storage Accounts Dashboard</h1>
+  <p>Upload the <strong>storage account summary CSV</strong> exported by <code>get_storage_accounts.py</code>.<br>Files are parsed locally in your browser.</p>
+  <div id="upload-zone" class="drop-zone" style="max-width:520px;margin:0 auto">
+    <div class="icon">📦</div>
+    <div class="label">Drop your storage account CSV file here</div>
+    <div class="hint">Expected: *_storage_accounts_summary_*.csv</div>
+  </div>
+  <input type="file" id="file-input" accept=".csv" style="display:none"
+         title="Expected file: *_storage_accounts_summary_*.csv">
+  <div id="upload-status" style="display:none;font-size:12px;color:var(--text-dim);text-align:center"></div>
+  <div style="margin-top:8px;color:var(--text-dim);font-size:13px;text-align:center">- or -</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+    <button class="btn btn--ghost" onclick="loadDemo()">Load Demo Data</button>
+  </div>
+</div>
+
+<div id="dashboardScreen" style="display:none">
+  <div class="topbar">
+    <h1><img src="../assets/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle"><span id="dashTitle">Azure Storage Accounts Dashboard</span></h1>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+      <button class="topbar-btn" id="reloadBtn">↩ Load another CSV</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+
+  <div class="filter-bar" id="filterBar"></div>
+  <div class="kpi-row" id="kpis"></div>
+
+  <div class="env-section">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+      <div class="env-icon">▼</div>
+      <h2>Security and Compliance Overview</h2>
+      <span class="env-summary" id="overviewSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-2">
+          <div class="card">
+            <h2>Quality Score Distribution</h2>
+            <div class="storage-chart-wrap"><canvas id="qualityChart"></canvas></div>
+          </div>
+          <div class="card">
+            <h2>Replication Mix</h2>
+            <div class="storage-chart-wrap"><canvas id="replicationChart"></canvas></div>
+          </div>
+        </div>
+        <div class="row row-full" style="margin-top:12px">
+          <div class="card">
+            <h2>Subscription Overview</h2>
+            <div class="storage-table-wrap"><table class="summary-table" id="subscriptionTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="env-section">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+      <div class="env-icon">▼</div>
+      <h2>Storage Account Detail</h2>
+      <span class="env-summary" id="detailSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full">
+          <div class="card">
+            <div class="storage-table-wrap"><table class="summary-table storage-table" id="detailTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let ALL_ROWS = [];
+let FILTER_OPTIONS = {};
+let ACTIVE_FILTERS = {};
+let LOADED_FILE = '';
+let QUALITY_CHART = null;
+let REPLICATION_CHART = null;
+
+const FILTER_DEFS = [
+  { key: 'subscription', label: 'Subscription', icon: '📋' },
+  { key: 'location', label: 'Location', icon: '📍' },
+  { key: 'sku_tier', label: 'SKU Tier', icon: '⭐' },
+  { key: 'replication_type', label: 'Replication', icon: '🧬' },
+  { key: 'access_tier', label: 'Access Tier', icon: '🧊' },
+  { key: 'default_action', label: 'Firewall', icon: '🔐' },
+];
+
+function pf(v) {
+  if (v === '' || v == null) return null;
+  const n = parseFloat(String(v).replace(',', '.'));
+  return Number.isFinite(n) ? n : null;
+}
+
+function esc(v) {
+  return String(v || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function parseCSV(text) {
+  if (!text) return [];
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const lines = text.split(/\r?\n/).filter(line => line.trim());
+  if (lines.length < 2) return [];
+
+  const headers = lines[0].split(';').map(v => v.trim());
+  return lines.slice(1).map(line => {
+    const cols = line.split(';');
+    const row = {};
+    headers.forEach((h, idx) => { row[h] = (cols[idx] || '').trim(); });
+
+    row.subscription = row.subscription_name || row.subscription_id || '';
+    row.quality_score_num = pf(row.quality_score);
+    row.security_score_num = pf(row.security_score);
+    row.compliance_score_num = pf(row.compliance_score);
+    row.private_endpoint_count_num = pf(row.private_endpoint_count) || 0;
+    row.has_recommendation = !!(row.recommendations || '').trim();
+    return row;
+  });
+}
+
+function fmtInt(v) {
+  return v == null ? '0' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+
+function fmtNum(v, digits = 1) {
+  return v == null ? '0.0' : Number(v).toLocaleString('en-US', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+function average(values) {
+  const list = (values || []).filter(v => v != null);
+  if (!list.length) return null;
+  return list.reduce((sum, value) => sum + value, 0) / list.length;
+}
+
+function extractFilterOptions(rows) {
+  const out = {
+    subscription: new Set(),
+    location: new Set(),
+    sku_tier: new Set(),
+    replication_type: new Set(),
+    access_tier: new Set(),
+    default_action: new Set(),
+  };
+
+  rows.forEach(r => {
+    if (r.subscription) out.subscription.add(r.subscription);
+    if (r.location) out.location.add(r.location);
+    if (r.sku_tier) out.sku_tier.add(r.sku_tier);
+    if (r.replication_type) out.replication_type.add(r.replication_type);
+    if (r.access_tier) out.access_tier.add(r.access_tier);
+    if (r.default_action) out.default_action.add(r.default_action);
+  });
+
+  return {
+    subscription: [...out.subscription].sort(),
+    location: [...out.location].sort(),
+    sku_tier: [...out.sku_tier].sort(),
+    replication_type: [...out.replication_type].sort(),
+    access_tier: [...out.access_tier].sort(),
+    default_action: [...out.default_action].sort(),
+  };
+}
+
+function initFilters() {
+  ACTIVE_FILTERS = {};
+  FILTER_DEFS.forEach(def => { ACTIVE_FILTERS[def.key] = new Set(); });
+}
+
+function filteredRows() {
+  return ALL_ROWS.filter(row => {
+    for (const def of FILTER_DEFS) {
+      const selected = ACTIVE_FILTERS[def.key];
+      if (selected && selected.size && !selected.has(row[def.key] || '')) return false;
+    }
+    return true;
+  });
+}
+
+function qualityBucket(score) {
+  if (score == null) return 'Unknown';
+  if (score >= 85) return 'Excellent (85-100)';
+  if (score >= 70) return 'Good (70-84)';
+  if (score >= 50) return 'Needs Attention (50-69)';
+  return 'Critical (<50)';
+}
+
+function renderKpis(rows) {
+  const el = document.getElementById('kpis');
+  if (!rows.length) {
+    el.innerHTML = '<div class="kpi"><div class="label">No data</div><div class="value">-</div></div>';
+    return;
+  }
+
+  const avgQuality = average(rows.map(r => r.quality_score_num));
+  const avgSecurity = average(rows.map(r => r.security_score_num));
+  const avgCompliance = average(rows.map(r => r.compliance_score_num));
+  const restricted = rows.filter(r => (r.default_action || '').toLowerCase() === 'deny').length;
+  const withPe = rows.filter(r => (r.private_endpoint_count_num || 0) > 0).length;
+  const critical = rows.filter(r => (r.quality_score_num || 0) < 50).length;
+
+  el.innerHTML = `
+    <div class="kpi"><div class="label">Storage Accounts</div><div class="value">${fmtInt(rows.length)}</div></div>
+    <div class="kpi"><div class="label">Avg Quality Score</div><div class="value mono">${fmtNum(avgQuality)}</div></div>
+    <div class="kpi"><div class="label">Avg Security Score</div><div class="value mono">${fmtNum(avgSecurity)}</div></div>
+    <div class="kpi"><div class="label">Avg Compliance Score</div><div class="value mono">${fmtNum(avgCompliance)}</div></div>
+    <div class="kpi"><div class="label">Firewall Restricted</div><div class="value">${fmtInt(restricted)}</div><div class="sub-value">default action = Deny</div></div>
+    <div class="kpi"><div class="label">Private Endpoints</div><div class="value">${fmtInt(withPe)}</div><div class="sub-value">accounts with >= 1 endpoint</div></div>
+    <div class="kpi"><div class="label">Critical Quality</div><div class="value">${fmtInt(critical)}</div><div class="sub-value">quality score < 50</div></div>`;
+
+  document.getElementById('overviewSummary').textContent = `${fmtInt(rows.length)} account(s) in current filter set`;
+  document.getElementById('detailSummary').textContent = `${fmtInt(rows.length)} visible row(s)`;
+}
+
+function renderSubscriptionTable(rows) {
+  const bySub = new Map();
+  rows.forEach(r => {
+    const key = r.subscription || '-';
+    if (!bySub.has(key)) {
+      bySub.set(key, {
+        subscription: key,
+        accounts: 0,
+        quality: [],
+        security: [],
+        compliance: [],
+        restricted: 0,
+        privateEndpoints: 0,
+        critical: 0,
+      });
+    }
+    const item = bySub.get(key);
+    item.accounts += 1;
+    item.quality.push(r.quality_score_num);
+    item.security.push(r.security_score_num);
+    item.compliance.push(r.compliance_score_num);
+    if ((r.default_action || '').toLowerCase() === 'deny') item.restricted += 1;
+    if ((r.private_endpoint_count_num || 0) > 0) item.privateEndpoints += 1;
+    if ((r.quality_score_num || 0) < 50) item.critical += 1;
+  });
+
+  const rowsHtml = [...bySub.values()]
+    .sort((a, b) => b.accounts - a.accounts)
+    .map(item => `
+      <tr>
+        <td>${esc(item.subscription)}</td>
+        <td class="num">${fmtInt(item.accounts)}</td>
+        <td class="num">${fmtNum(average(item.quality))}</td>
+        <td class="num">${fmtNum(average(item.security))}</td>
+        <td class="num">${fmtNum(average(item.compliance))}</td>
+        <td class="num">${fmtInt(item.restricted)}</td>
+        <td class="num">${fmtInt(item.privateEndpoints)}</td>
+        <td class="num">${fmtInt(item.critical)}</td>
+      </tr>
+    `)
+    .join('');
+
+  document.getElementById('subscriptionTable').innerHTML = `
+    <thead>
+      <tr>
+        <th>Subscription</th>
+        <th class="num">Accounts</th>
+        <th class="num">Avg Quality</th>
+        <th class="num">Avg Security</th>
+        <th class="num">Avg Compliance</th>
+        <th class="num">Restricted</th>
+        <th class="num">With Private EP</th>
+        <th class="num">Critical</th>
+      </tr>
+    </thead>
+    <tbody>${rowsHtml}</tbody>
+  `;
+}
+
+function destroyCharts() {
+  if (QUALITY_CHART) { QUALITY_CHART.destroy(); QUALITY_CHART = null; }
+  if (REPLICATION_CHART) { REPLICATION_CHART.destroy(); REPLICATION_CHART = null; }
+}
+
+function renderCharts(rows) {
+  destroyCharts();
+
+  const qualityBuckets = new Map();
+  rows.forEach(r => {
+    const key = qualityBucket(r.quality_score_num);
+    qualityBuckets.set(key, (qualityBuckets.get(key) || 0) + 1);
+  });
+
+  const qualityLabels = ['Excellent (85-100)', 'Good (70-84)', 'Needs Attention (50-69)', 'Critical (<50)', 'Unknown'];
+  const qualityCounts = qualityLabels.map(label => qualityBuckets.get(label) || 0);
+
+  const replicationMap = new Map();
+  rows.forEach(r => {
+    const key = r.replication_type || 'Unknown';
+    replicationMap.set(key, (replicationMap.get(key) || 0) + 1);
+  });
+
+  const replicationEntries = [...replicationMap.entries()].sort((a, b) => b[1] - a[1]);
+
+  Chart.defaults.color = getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim() || '#94a3b8';
+  Chart.defaults.borderColor = getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || '#233044';
+  Chart.defaults.font.family = "'DM Sans',sans-serif";
+
+  QUALITY_CHART = new Chart(document.getElementById('qualityChart').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: qualityLabels,
+      datasets: [{
+        label: 'Accounts',
+        data: qualityCounts,
+        backgroundColor: ['#16a34a', '#0ea5e9', '#f59e0b', '#ef4444', '#64748b'],
+        borderRadius: 6,
+      }],
+    },
+    options: {
+      maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { maxRotation: 0, autoSkip: false } },
+        y: { beginAtZero: true, ticks: { precision: 0 } },
+      },
+      plugins: { legend: { display: false } },
+    },
+  });
+
+  REPLICATION_CHART = new Chart(document.getElementById('replicationChart').getContext('2d'), {
+    type: 'doughnut',
+    data: {
+      labels: replicationEntries.map(([label]) => label),
+      datasets: [{
+        data: replicationEntries.map(([, count]) => count),
+        backgroundColor: ['#4f8cff', '#22d3ab', '#f59e42', '#a78bfa', '#38bdf8', '#f472b6', '#facc15'],
+        borderWidth: 1,
+      }],
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom' },
+      },
+    },
+  });
+}
+
+function badgeForScore(score) {
+  if (score == null) return '<span class="storage-chip">n/a</span>';
+  if (score >= 85) return `<span class="storage-chip ok">${fmtNum(score)}</span>`;
+  if (score >= 70) return `<span class="storage-chip">${fmtNum(score)}</span>`;
+  if (score >= 50) return `<span class="storage-chip warn">${fmtNum(score)}</span>`;
+  return `<span class="storage-chip bad">${fmtNum(score)}</span>`;
+}
+
+function boolChip(value) {
+  const v = String(value || '').toLowerCase();
+  if (v === 'true') return '<span class="storage-chip ok">true</span>';
+  if (v === 'false') return '<span class="storage-chip bad">false</span>';
+  return '<span class="storage-chip">n/a</span>';
+}
+
+function renderDetailTable(rows) {
+  const sorted = [...rows].sort((a, b) => (b.quality_score_num || 0) - (a.quality_score_num || 0));
+  const body = sorted.map(r => `
+    <tr>
+      <td>${esc(r.subscription || '-')}</td>
+      <td>${esc(r.resource_group || '-')}</td>
+      <td>${esc(r.storage_account_name || '-')}</td>
+      <td>${esc(r.location || '-')}</td>
+      <td>${esc(r.sku_name || '-')}</td>
+      <td>${esc(r.replication_type || '-')}</td>
+      <td>${esc(r.access_tier || '-')}</td>
+      <td class="num" data-v="${r.quality_score_num || 0}">${badgeForScore(r.quality_score_num)}</td>
+      <td class="num" data-v="${r.security_score_num || 0}">${badgeForScore(r.security_score_num)}</td>
+      <td class="num" data-v="${r.compliance_score_num || 0}">${badgeForScore(r.compliance_score_num)}</td>
+      <td>${boolChip(r.https_only)}</td>
+      <td>${esc(r.minimum_tls_version || '-')}</td>
+      <td>${esc(r.default_action || '-')}</td>
+      <td class="num" data-v="${r.private_endpoint_count_num || 0}">${fmtInt(r.private_endpoint_count_num || 0)}</td>
+      <td class="wrap" title="${esc(r.cost_signal || '')}">${esc(r.cost_signal || '-')}</td>
+      <td class="wrap" title="${esc(r.recommendations || '')}">${esc(r.recommendations || '-')}</td>
+    </tr>
+  `).join('');
+
+  document.getElementById('detailTable').innerHTML = `
+    <thead>
+      <tr>
+        <th>Subscription</th>
+        <th>Resource Group</th>
+        <th>Storage Account</th>
+        <th>Location</th>
+        <th>SKU</th>
+        <th>Replication</th>
+        <th>Access Tier</th>
+        <th class="num">Quality</th>
+        <th class="num">Security</th>
+        <th class="num">Compliance</th>
+        <th>HTTPS Only</th>
+        <th>Min TLS</th>
+        <th>Firewall</th>
+        <th class="num">Private EP</th>
+        <th>Cost Signal</th>
+        <th>Recommendations</th>
+      </tr>
+    </thead>
+    <tbody>${body}</tbody>
+  `;
+}
+
+function applyFilters() {
+  const rows = filteredRows();
+  renderKpis(rows);
+  renderCharts(rows);
+  renderSubscriptionTable(rows);
+  renderDetailTable(rows);
+}
+
+function updateUploadStatus() {
+  const el = document.getElementById('upload-status');
+  if (!LOADED_FILE) {
+    el.style.display = 'none';
+    el.textContent = '';
+    return;
+  }
+  el.style.display = 'block';
+  el.textContent = `Loaded file: ${LOADED_FILE}`;
+}
+
+function showDashboard() {
+  document.getElementById('uploadScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'block';
+
+  const customerMatch = (LOADED_FILE || '').match(/^([A-Za-z0-9]+)_storage_accounts_summary_/i);
+  const customer = customerMatch ? customerMatch[1].toUpperCase() : '';
+  document.getElementById('dashTitle').textContent = (customer ? `${customer} - ` : '') + 'Azure Storage Accounts Dashboard';
+  document.getElementById('dashMeta').innerHTML = `<span style="color:var(--green)">✓ summary</span> · ${esc(LOADED_FILE || '')}`;
+
+  FILTER_OPTIONS = extractFilterOptions(ALL_ROWS);
+  initFilters();
+  buildFilterBar();
+  applyFilters();
+}
+
+function isSummaryFile(name) {
+  return /storage_accounts_summary/i.test(name || '');
+}
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = event => {
+    try {
+      const rows = parseCSV(event.target.result || '');
+      if (!rows.length) {
+        alert('No data rows found in CSV: ' + file.name);
+        return;
+      }
+
+      const inferredSummary = isSummaryFile(file.name) || rows[0].storage_account_name;
+      if (!inferredSummary) {
+        alert('This file does not look like a storage accounts summary export.');
+        return;
+      }
+
+      ALL_ROWS = rows;
+      LOADED_FILE = file.name;
+      updateUploadStatus();
+      showDashboard();
+    } catch (err) {
+      alert('Error parsing CSV: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+const zone = document.getElementById('upload-zone');
+const fileInput = document.getElementById('file-input');
+
+zone.addEventListener('click', () => fileInput.click());
+zone.addEventListener('dragover', event => { event.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', event => {
+  event.preventDefault();
+  zone.classList.remove('dragover');
+  const file = event.dataTransfer.files?.[0];
+  if (file) handleFile(file);
+});
+fileInput.addEventListener('change', event => {
+  const file = event.target.files?.[0];
+  if (file) handleFile(file);
+  fileInput.value = '';
+});
+
+document.getElementById('reloadBtn').addEventListener('click', () => {
+  destroyCharts();
+  ALL_ROWS = [];
+  FILTER_OPTIONS = {};
+  ACTIVE_FILTERS = {};
+  LOADED_FILE = '';
+  updateUploadStatus();
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('uploadScreen').style.display = 'flex';
+});
+
+function parseFileSortKey(name) {
+  const shortStamp = name.match(/_(\d{8}_\d{4})\.csv$/i);
+  if (shortStamp) {
+    const stamp = shortStamp[1];
+    return Number(stamp.replace('_', ''));
+  }
+
+  const rangeStamp = name.match(/_(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.csv$/i);
+  if (rangeStamp) {
+    return Number(rangeStamp[2].replace(/-/g, ''));
+  }
+
+  return 0;
+}
+
+async function loadDemo() {
+  try {
+    const manifestResp = await fetch('../../reports/DATS/manifest.json', { cache: 'no-store' });
+    if (!manifestResp.ok) throw new Error('Could not load demo manifest');
+    const manifest = await manifestResp.json();
+
+    let demoFile = 'DATS_storage_accounts_summary_20260518_1320.csv';
+    const dashboard = (manifest.dashboards || []).find(d => d.id === 'storageAccounts');
+    if (dashboard && dashboard.files && dashboard.files.length) {
+      const candidates = dashboard.files
+        .filter(f => /storage_accounts_summary/i.test(f.filename || ''))
+        .sort((a, b) => parseFileSortKey(b.filename || '') - parseFileSortKey(a.filename || ''));
+      if (candidates.length) demoFile = candidates[0].filename;
+    }
+
+    const csvResp = await fetch(`../../reports/DATS/${demoFile}`, { cache: 'no-store' });
+    if (!csvResp.ok) throw new Error(`Could not load demo file ${demoFile}`);
+    const csv = await csvResp.text();
+    handleFile(new File([csv], demoFile, { type: 'text/csv' }));
+  } catch (err) {
+    alert('Failed to load demo data: ' + err.message);
+  }
+}
+
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('dco-theme', next);
+}
+
+document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+document.getElementById('themeToggleUpload').addEventListener('click', toggleTheme);
+
+function ensureStorageSpinner() {
+  let spinner = document.getElementById('storageSpinner');
+  if (spinner) return spinner;
+
+  spinner = document.createElement('div');
+  spinner.id = 'storageSpinner';
+  spinner.innerHTML = '<div class="spinner-ring"></div><div class="spinner-label">Loading data from Azure Storage...<div class="spinner-step" id="spinnerStep">Connecting...</div></div>';
+  document.getElementById('uploadScreen').insertBefore(spinner, document.getElementById('uploadScreen').children[1]);
+  return spinner;
+}
+
+function setStorageSpinner(stepText) {
+  const spinner = ensureStorageSpinner();
+  const stepEl = document.getElementById('spinnerStep');
+  if (stepEl && stepText) stepEl.textContent = stepText;
+
+  const uploadScreen = document.getElementById('uploadScreen');
+  if (uploadScreen) {
+    Array.from(uploadScreen.children).forEach(el => {
+      if (el.id === 'storageSpinner') return;
+      if (el.dataset.prevDisplay === undefined) el.dataset.prevDisplay = el.style.display || '';
+      el.style.display = 'none';
+    });
+  }
+
+  spinner.style.display = 'flex';
+}
+
+function hideStorageSpinner() {
+  const spinner = document.getElementById('storageSpinner');
+  if (spinner) spinner.style.display = 'none';
+
+  const uploadScreen = document.getElementById('uploadScreen');
+  if (uploadScreen) {
+    Array.from(uploadScreen.children).forEach(el => {
+      if (el.id === 'storageSpinner') return;
+      const prev = el.dataset.prevDisplay !== undefined ? el.dataset.prevDisplay : '';
+      el.style.display = prev;
+      delete el.dataset.prevDisplay;
+    });
+  }
+}
+
+window.onFilesLoaded = function(loadedFiles) {
+  const organized = organizeLoadedFiles(loadedFiles);
+  if (organized.summaryContent) {
+    handleFile(new File([organized.summaryContent], 'storage_accounts_summary.csv', { type: 'text/csv' }));
+  }
+};
+
+async function loadLatestStorageSummaryFallback(step) {
+  const conn = localStorage.getItem('dco-storage-connection');
+  if (!conn) return false;
+
+  const client = new AzureStorageClient(conn);
+  const manifests = await client.findManifests();
+  if (!manifests.length) return false;
+
+  const candidates = [];
+  const seen = new Set();
+
+  for (const manifest of manifests) {
+    step('Scanning storage files...');
+    const dashboard = (manifest.manifest.dashboards || []).find(d => d.id === 'storageAccounts');
+    if (dashboard && dashboard.files) {
+      dashboard.files.forEach(file => {
+        if (!/storage_accounts_summary/i.test(file.filename || '')) return;
+        const key = `${manifest.container}|${file.filename}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        candidates.push({ container: manifest.container, filename: file.filename });
+      });
+      continue;
+    }
+
+    try {
+      const prefix = client.parsedConnection.pathPrefix || '';
+      const blobs = await client.listBlobs(manifest.container, prefix);
+      blobs.forEach(blob => {
+        if (!/storage_accounts_summary/i.test(blob.name || '')) return;
+        const key = `${manifest.container}|${blob.name}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        candidates.push({ container: manifest.container, filename: blob.name });
+      });
+    } catch (_err) {
+      // Skip this manifest/container when list fails.
+    }
+  }
+
+  if (!candidates.length) return false;
+
+  candidates.sort((a, b) => parseFileSortKey(b.filename) - parseFileSortKey(a.filename));
+  const newest = candidates[0];
+
+  step('Downloading latest storage summary...');
+  const content = await client.downloadBlob(newest.container, newest.filename);
+  if (!content || !content.trim()) return false;
+
+  handleFile(new File([content], newest.filename.split('/').pop(), { type: 'text/csv' }));
+  return true;
+}
+
+async function autoLoadFromStorage() {
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+
+  if (hasConnection) {
+    setStorageSpinner('Connecting...');
+  }
+
+  const loadedFromManifest = await initStorageFileLoader('storageAccounts', step => {
+    setStorageSpinner(step || 'Loading...');
+  });
+
+  if (loadedFromManifest) return;
+
+  if (hasConnection) {
+    try {
+      const loadedFallback = await loadLatestStorageSummaryFallback(step => {
+        setStorageSpinner(step || 'Loading...');
+      });
+      if (loadedFallback) return;
+    } catch (err) {
+      console.warn('[storageAccounts] fallback auto-load failed', err);
+    }
+  }
+
+  hideStorageSpinner();
+  document.getElementById('uploadScreen').style.display = 'flex';
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+</script>
+<script src="../assets/table-sort.js"></script>
+</body>
+</html>

@@ -507,7 +507,7 @@ function aggregate(records){
     const resKey=r.res_name+'|'+subKey;
     if(!resMap[resKey])resMap[resKey]={rn:r.res_name,rt,rg:r.rg,sub:subKey,c:0,cu:0};
     resMap[resKey].c+=r.cost;resMap[resKey].cu+=r.cost_usd;
-    if(!subMap[subKey])subMap[subKey]={c:0,cu:0};
+    if(!subMap[subKey])subMap[subKey]={id:r.sub_id||'',name:subKey,c:0,cu:0};
     subMap[subKey].c+=r.cost;subMap[subKey].cu+=r.cost_usd;
     if(!subMonthMap[r.month])subMonthMap[r.month]={};
     if(!subMonthMap[r.month][subKey])subMonthMap[r.month][subKey]=0;
@@ -538,7 +538,7 @@ function aggregate(records){
   const type_mom={};
   for(const rt of topTypes){type_mom[rt]=monthLabels.map((ml,i)=>({m:ml,c:Math.round((typeMonthMap[months[i]]?.[rt]||0)*100)/100}))}
   const top_resources=Object.values(resMap).sort((a,b)=>b.c-a.c).slice(0,50).map(r=>({...r,c:Math.round(r.c*100)/100,cu:Math.round(r.cu*100)/100}));
-  const subs=Object.entries(subMap).map(([sub,v])=>({sub,c:Math.round(v.c*100)/100,cu:Math.round(v.cu*100)/100})).sort((a,b)=>b.c-a.c);
+  const subs=Object.values(subMap).map(v=>({sub:v.name,id:v.id,c:Math.round(v.c*100)/100,cu:Math.round(v.cu*100)/100})).sort((a,b)=>b.c-a.c);
   const sub_mom={};
   for(const sub of subs.map(s=>s.sub)){sub_mom[sub]=monthLabels.map((ml,i)=>({m:ml,c:Math.round((subMonthMap[months[i]]?.[sub]||0)*100)/100}))}
   
@@ -929,10 +929,35 @@ function renderMoM(){
   makeChart('chartMom',{type:'bar',data:{labels:types.map(shortType),datasets},options:{responsive:true,maintainAspectRatio:false,plugins:{tooltip:{...tooltipStyle,callbacks:{label:c=>` ${c.dataset.label}: ${EUR(c.parsed.y)}`}},legend:{position:'top',align:'end'}},scales:{x:{ticks:{font:{size:10},maxRotation:45},grid:{display:false}},y:{ticks:{callback:v=>EUR(v),font:{family:"'JetBrains Mono'",size:10}}}}}});
 }
 
+function getAzurePortalSubscriptionUrl(subscriptionId){
+  if(!subscriptionId)return '';
+  return `https://portal.azure.com/#@/resource/subscriptions/${encodeURIComponent(subscriptionId)}/overview`;
+}
+
 function renderSubChart(){
   if(!DATA||!DATA.subs.length)return;
   const subs=DATA.subs.slice(0,15);
-  makeChart('chartSubs',{type:'bar',data:{labels:subs.map(s=>s.sub),datasets:[{label:'Total Cost',data:subs.map(s=>s.c),backgroundColor:COLORS.map(c=>c+'99'),borderColor:COLORS,borderWidth:1,borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{tooltip:{...tooltipStyle,callbacks:{label:c=>` ${EUR(c.parsed.x)}`}},legend:{display:false}},scales:{x:{ticks:{callback:v=>EUR(v),font:{family:"'JetBrains Mono'",size:10}}},y:{ticks:{font:{size:11}},grid:{display:false}}}}});
+  makeChart('chartSubs',{
+    type:'bar',
+    data:{labels:subs.map(s=>s.sub),datasets:[{label:'Total Cost',data:subs.map(s=>s.c),backgroundColor:COLORS.map(c=>c+'99'),borderColor:COLORS,borderWidth:1,borderRadius:4}]},
+    options:{
+      indexAxis:'y',
+      responsive:true,
+      maintainAspectRatio:false,
+      onClick:(event,elements)=>{
+        const hit=elements[0];
+        if(!hit)return;
+        const subscriptionId=subs[hit.index]?.id;
+        const portalUrl=getAzurePortalSubscriptionUrl(subscriptionId);
+        if(portalUrl)window.open(portalUrl,'_blank','noopener');
+      },
+      onHover:(event,elements)=>{
+        event.native.target.style.cursor=elements.length&&subs[elements[0].index]?.id?'pointer':'default';
+      },
+      plugins:{tooltip:{...tooltipStyle,callbacks:{label:c=>` ${EUR(c.parsed.x)}`}},legend:{display:false}},
+      scales:{x:{ticks:{callback:v=>EUR(v),font:{family:"'JetBrains Mono'",size:10}}},y:{ticks:{font:{size:11}},grid:{display:false}}}
+    }
+  });
 }
 
 let subTrendChart=null;

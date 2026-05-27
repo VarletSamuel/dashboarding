@@ -77,7 +77,7 @@
   <div class="env-section" id="sect-detail">
     <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
       <div class="env-icon">▼</div>
-      <h2>VMs Detail</h2>
+      <h2>VM Quality Controls</h2>
       <span class="env-summary" id="detailSummary"></span>
     </div>
     <div class="env-body">
@@ -148,6 +148,14 @@ function fmtMem(bytes) {
   if (bytes == null) return '—';
   const gb = bytes / 1073741824;
   return gb.toFixed(2) + ' GB';
+}
+function toBool(v) {
+  if (typeof v === 'boolean') return v;
+  if (v == null) return null;
+  const s = String(v).trim().toLowerCase();
+  if (s === 'true' || s === '1' || s === 'yes') return true;
+  if (s === 'false' || s === '0' || s === 'no') return false;
+  return null;
 }
 function pctCls(v) { if (v == null) return 'na'; if (v < 40) return 'low'; if (v < 75) return 'mid'; return 'high'; }
 function nvl(v, fb = '') { return (v == null || v === '') ? fb : v; }
@@ -284,16 +292,24 @@ function aggregate(summaryRows, tsRows) {
       data_disk_count:      pi(r.data_disk_count) || 0,
       data_disk_total_size_gb: pf(r.data_disk_total_size_gb),
       nic_count:            pi(r.nic_count),
+      has_public_ip:        toBool(r.has_public_ip),
+      public_ip_addresses:  r.public_ip_addresses || '',
       availability_zone:    r.availability_zone || '',
       availability_set:     r.availability_set || '',
       license_type:         r.license_type || '',
+      hybrid_benefit_active: toBool(r.hybrid_benefit_active),
+      hybrid_benefit_description: r.hybrid_benefit_description || '',
       priority:             r.priority || '',
       eviction_policy:      r.eviction_policy || '',
       identity_type:        r.identity_type || '',
       extensions:           r.extensions || '',
       power_state:          r.power_state || '',
       provisioning_state:   r.provisioning_state || '',
+      backup_configured:    r.backup_configured === 'N/A' ? 'N/A' : toBool(r.backup_configured),
+      backup_status:        r.backup_status || '',
+      backup_last_run:      r.backup_last_run_utc || '',
       tags:                 r.tags || '',
+      managed_by:           r.managed_by || '',
       cost_signal_category: r.cost_signal_category || '',
       cost_signal_reason:   r.cost_signal_reason || '',
       observed_sample_count: pi(r.observed_sample_count) || 0,
@@ -418,21 +434,19 @@ function renderDetailTable() {
   const summaryEl = document.getElementById('detailSummary');
   if (!AGG.length) { tbl.innerHTML = ''; if (summaryEl) summaryEl.textContent = 'No data'; return; }
 
-  if (summaryEl) summaryEl.textContent = `${AGG.length} VM${AGG.length !== 1 ? 's' : ''} sorted by urgency`;
+  if (summaryEl) summaryEl.textContent = `${AGG.length} VM${AGG.length !== 1 ? 's' : ''}`;
 
   tbl.innerHTML = `
     <thead><tr>
       <th>VM</th>
       <th>Size</th>
       <th>OS</th>
-      <th>Disks</th>
-      <th>Power State</th>
-      <th class="num">CPU p95</th>
-      <th class="num">CPU peak</th>
-      <th class="num">Avail Mem avg</th>
-      <th class="num">Net In</th>
-      <th class="num">Net Out</th>
-      <th>Signal</th>
+      <th>Public IP</th>
+      <th>Hybrid Benefit</th>
+      <th>Backup Configured</th>
+      <th>Backup Status</th>
+      <th>Backup Last Run</th>
+      <th>Managed by</th>
     </tr></thead>
     <tbody>${AGG.map(v => `<tr>
       <td title="${esc(v.resource_group)} · ${esc(v.subscription_name || v.subscription_id)}">
@@ -441,14 +455,12 @@ function renderDetailTable() {
       </td>
       <td>${esc(v.vm_size)}</td>
       <td>${esc(v.os_type)}</td>
-      <td class="num" title="OS disk ${v.os_disk_size_gb != null ? v.os_disk_size_gb + ' GB' : ''} · ${v.data_disk_count} data disk(s)">${fmtInt(v.os_disk_size_gb)} GB + ${fmtInt(v.data_disk_count)}×</td>
-      <td><span class="state-pill ${stateClass(v.power_state)}">${esc(v.power_state || '?')}</span></td>
-      <td class="num">${fmtNum(v.cpu_p95_pct, 1)}%</td>
-      <td class="num">${fmtNum(v.cpu_peak_pct, 1)}%</td>
-      <td class="num">${fmtMem(v.avail_mem_avg_bytes)}</td>
-      <td class="num">${fmtBytes(v.network_in_bytes)}</td>
-      <td class="num">${fmtBytes(v.network_out_bytes)}</td>
-      <td>${signalBadge(v.cost_signal_category, v.cost_signal_reason)}</td>
+      <td>${v.has_public_ip == null || v.has_public_ip === '' ? 'Not collected' : (toBool(v.has_public_ip) ? 'Yes' : 'No')}</td>
+      <td title="${esc(v.hybrid_benefit_description || '')}">${v.hybrid_benefit_active == null ? 'Not collected' : (v.hybrid_benefit_active ? 'Enabled' : 'Not enabled')}</td>
+      <td>${v.backup_configured === 'N/A' ? 'N/A' : v.backup_configured == null ? 'Not collected' : (v.backup_configured ? 'Yes' : 'No')}</td>
+      <td>${v.backup_status === 'N/A' ? 'N/A' : v.backup_status ? esc(v.backup_status) : 'Not collected'}</td>
+      <td>${v.backup_last_run === 'N/A' ? 'N/A' : v.backup_last_run ? esc(v.backup_last_run) : 'Not collected'}</td>
+      <td>${esc(v.managed_by || '')}</td>
     </tr>`).join('')}</tbody>`;
 }
 
@@ -537,6 +549,7 @@ function renderVmCards() {
         ${v.priority ? `<span class="meta-pill">${esc(v.priority)}</span>` : ''}
         ${disksLabel ? `<span class="meta-pill">${esc(disksLabel)}</span>` : ''}
         ${v.license_type ? `<span class="meta-pill">AHB: ${esc(v.license_type)}</span>` : ''}
+        <span class="meta-pill">${esc(v.managed_by || '')}</span>
       </div>
 
       ${v.power_state !== 'deallocated' ? `
