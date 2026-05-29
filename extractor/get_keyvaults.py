@@ -91,6 +91,7 @@ SUMMARY_COLUMNS = [
     "sku_name",
     "vault_uri",
     "create_mode",
+    "authorization_mechanism",
     "enable_rbac_authorization",
     "enabled_for_deployment",
     "enabled_for_disk_encryption",
@@ -103,13 +104,6 @@ SUMMARY_COLUMNS = [
     "private_endpoint_count",
     "private_endpoint_names",
     "soft_delete_retention_days",
-    "qc_soft_delete_enabled",
-    "qc_purge_protection_enabled",
-    "qc_rbac_authorization",
-    "qc_network_restricted",
-    "qc_private_endpoint_configured",
-    "qc_soft_delete_90_days",
-    "qc_has_tags",
     "tags",
     "quality_score",
     "security_score",
@@ -352,15 +346,17 @@ def build_vault_summary(
     resource_group: str,
     network_client: NetworkManagementClient,
 ) -> dict:
-    def bool_str(value: bool) -> str:
-        return "True" if value else "False"
-
-    def truthy(value) -> bool:
-        return str(value).strip().lower() in {"true", "1", "yes", "enabled"}
-
     vault_id = fmt(vault.id)
     properties = getattr(vault, "properties", None)
-    sku = getattr(vault, "sku", None)
+
+    # SDKs expose SKU under different paths depending on API/model version.
+    sku_obj = getattr(vault, "sku", None) or getattr(properties, "sku", None)
+    sku_name = fmt(getattr(sku_obj, "name", ""))
+
+    create_mode = fmt(getattr(properties, "create_mode", getattr(vault, "create_mode", ""))).strip()
+    if not create_mode:
+        # Existing/normal vaults frequently return no explicit create mode.
+        create_mode = "default"
 
     default_action, bypass_rules = get_network_rule_summary(properties)
     private_ep_count, private_ep_names = get_private_endpoints(network_client, vault_id, resource_group)
@@ -374,9 +370,9 @@ def build_vault_summary(
         "name": fmt(vault.name),
         "key_vault_id": vault_id,
         "location": fmt(vault.location),
-        "sku_name": fmt(getattr(sku, "name", "")),
+        "sku_name": sku_name,
         "vault_uri": fmt(getattr(properties, "vault_uri", "")),
-        "create_mode": fmt(getattr(properties, "create_mode", "")),
+        "create_mode": create_mode,
         "enable_rbac_authorization": fmt(getattr(properties, "enable_rbac_authorization", False)),
         "enabled_for_deployment": fmt(getattr(properties, "enabled_for_deployment", False)),
         "enabled_for_disk_encryption": fmt(getattr(properties, "enabled_for_disk_encryption", False)),
@@ -392,19 +388,9 @@ def build_vault_summary(
         "tags": tags_str(getattr(vault, "tags", None)),
     }
 
-    retention_days = vault_info.get("soft_delete_retention_days")
-    try:
-        retention_days = int(retention_days) if retention_days not in (None, "") else 0
-    except (TypeError, ValueError):
-        retention_days = 0
-
-    vault_info["qc_soft_delete_enabled"] = bool_str(truthy(vault_info.get("soft_delete_enabled")))
-    vault_info["qc_purge_protection_enabled"] = bool_str(truthy(vault_info.get("purge_protection_enabled")))
-    vault_info["qc_rbac_authorization"] = bool_str(truthy(vault_info.get("enable_rbac_authorization")))
-    vault_info["qc_network_restricted"] = bool_str((vault_info.get("default_action") or "").strip().lower() == "deny")
-    vault_info["qc_private_endpoint_configured"] = bool_str((vault_info.get("private_endpoint_count") or 0) > 0)
-    vault_info["qc_soft_delete_90_days"] = bool_str(retention_days >= 90)
-    vault_info["qc_has_tags"] = bool_str(bool(vault_info.get("tags")))
+    vault_info["authorization_mechanism"] = (
+        "RBAC" if str(vault_info.get("enable_rbac_authorization", "")).strip().lower() == "true" else "Access Policies"
+    )
 
     security_score = calculate_security_score(vault_info)
     compliance_score = calculate_compliance_score(vault_info)
@@ -446,8 +432,15 @@ def process_subscription(
         resource_group = parse_resource_group(vault.id or "")
         print(f"    • {fmt(vault.name)} ({resource_group})")
 
+        full_vault = vault
+        try:
+            # list() may not return all properties; get() ensures SKU/URI/create_mode are populated.
+            full_vault = kv_client.vaults.get(resource_group, fmt(vault.name))
+        except Exception as exc:
+            print(f"      ⚠  Could not fetch full vault properties for {fmt(vault.name)}: {exc}")
+
         vault_summary = build_vault_summary(
-            vault,
+            full_vault,
             tenant_id,
             sub_id,
             sub_name,
@@ -499,7 +492,7 @@ def export(args):
             all_summary.extend(s)
 
     os.makedirs(args.output_dir, exist_ok=True)
-    date_str = now.strftime("%Y%m%d_%H%M")
+    date_str = now.strftime("%Y%m%d")
 
     if args.input:
         prefix = os.path.splitext(os.path.basename(args.input))[0].upper()
