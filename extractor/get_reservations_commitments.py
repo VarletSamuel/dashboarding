@@ -456,6 +456,15 @@ def parse_savings_plan_row(tenant_id: str, order: dict, savings_plan: dict, run_
     }
 
 
+_RESERVATIONS_READER_HINT = (
+    "  → The service principal needs the 'Reservations Reader' role assigned at "
+    "tenant root scope (/) or EA/MCA enrollment level.\n"
+    "  → Azure portal: Reservations → Add role assignment → Reservations Reader\n"
+    "  → az cli: az role assignment create --role 'Reservations Reader' "
+    "--assignee <sp-client-id> --scope /"
+)
+
+
 def fetch_reserved_instances(
     token: str,
     tenant_id: str,
@@ -465,19 +474,28 @@ def fetch_reserved_instances(
 ) -> list[dict]:
     api_versions = ["2022-11-01", "2021-10-01"]
     orders: list[dict] = []
+    all_403 = True
 
     for api_version in api_versions:
         url = f"https://management.azure.com/providers/Microsoft.Capacity/reservationOrders?api-version={api_version}"
         try:
             orders = arm_get_all(token, url)
+            all_403 = False
             if orders:
                 print(f"  Reserved Instance orders: {len(orders)} (api-version={api_version})")
             break
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "?"
             print(f"  RI order list failed on api-version={api_version} (HTTP {status})")
+            if status != 403:
+                all_403 = False
 
     if not orders:
+        if all_403:
+            print(
+                "  ✗  Cannot list Reserved Instances — HTTP 403 on all API versions.\n"
+                + _RESERVATIONS_READER_HINT
+            )
         return []
 
     rows: list[dict] = []
@@ -521,19 +539,28 @@ def fetch_reserved_instances(
 def fetch_savings_plans(token: str, tenant_id: str, run_date: str) -> list[dict]:
     api_versions = ["2022-11-01", "2024-04-01"]
     orders: list[dict] = []
+    all_403 = True
 
     for api_version in api_versions:
         url = f"https://management.azure.com/providers/Microsoft.Capacity/savingsPlanOrders?api-version={api_version}"
         try:
             orders = arm_get_all(token, url)
+            all_403 = False
             if orders:
                 print(f"  Savings Plan orders: {len(orders)} (api-version={api_version})")
             break
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "?"
             print(f"  Savings Plan order list failed on api-version={api_version} (HTTP {status})")
+            if status != 403:
+                all_403 = False
 
     if not orders:
+        if all_403:
+            print(
+                "  ✗  Cannot list Savings Plans — HTTP 403 on all API versions.\n"
+                + _RESERVATIONS_READER_HINT
+            )
         return []
 
     rows: list[dict] = []
@@ -750,7 +777,11 @@ def main() -> None:
         all_rows.extend(sp_rows)
 
     if not all_rows:
-        print("No reservations commitments found.")
+        print(
+            "No reservations commitments found.\n"
+            "  (If 403 errors appeared above, fix the role assignment first — "
+            "the script cannot distinguish 'no RIs purchased' from 'access denied'.)"
+        )
         sys.exit(0)
 
     # Deduplicate by (type, commitment_id), useful when tenant contexts overlap.
