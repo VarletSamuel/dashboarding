@@ -83,12 +83,15 @@ def get_credential(
                 )
             )
 
-    default_cred = DefaultAzureCredential(additionally_allowed_tenants=["*"])
-    chain_candidates.append(default_cred)
+    # Prefer Azure CLI context for interactive/local runs when no explicit SP
+    # credentials are provided, then fall back to DefaultAzureCredential.
     if tenant_id:
         chain_candidates.append(AzureCliCredential(tenant_id=tenant_id))
     else:
         chain_candidates.append(AzureCliCredential())
+
+    default_cred = DefaultAzureCredential(additionally_allowed_tenants=["*"])
+    chain_candidates.append(default_cred)
     return ChainedTokenCredential(*chain_candidates)
 
 
@@ -183,16 +186,30 @@ def query_cost_api(
     columns = []
     next_url = url
     current_payload = payload
+    throttle_retries = 0
+    _MAX_THROTTLE_RETRIES = 20
 
     while next_url:
         resp = requests.post(next_url, json=current_payload, headers=headers, timeout=120)
 
         if resp.status_code == 429:
-            retry_after = int(resp.headers.get("Retry-After", "30"))
-            print(f"      Throttled — waiting {retry_after}s ...", flush=True)
+            throttle_retries += 1
+            if throttle_retries > _MAX_THROTTLE_RETRIES:
+                raise RuntimeError(
+                    f"Aborting after {_MAX_THROTTLE_RETRIES} consecutive 429 throttle responses."
+                )
+            # The Cost Management API's Retry-After is often optimistic (30s) while
+            # the actual throttle window is minutes long — enforce a 60s minimum.
+            retry_after = max(int(resp.headers.get("Retry-After", "60")), 60)
+            print(
+                f"      Throttled — waiting {retry_after}s ... "
+                f"({throttle_retries}/{_MAX_THROTTLE_RETRIES})",
+                flush=True,
+            )
             time.sleep(retry_after)
             continue
 
+        throttle_retries = 0  # reset on a successful response
         resp.raise_for_status()
         data = resp.json()
 
@@ -275,7 +292,15 @@ def fetch_subscription_costs(
             token, subscription_id, subscription_name, date_from, date_to)
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else "?"
-        print(f"    ERROR: HTTP {status} — skipping this subscription")
+        details = ""
+        if e.response is not None:
+            try:
+                details = (e.response.text or "").strip().replace("\n", " ")
+            except Exception:
+                details = ""
+        if details:
+            details = f" | {details[:240]}"
+        print(f"    ERROR: HTTP {status} — skipping this subscription{details}")
         return None
     except Exception as e:
         print(f"    ERROR: {e} — skipping this subscription")
@@ -543,11 +568,13 @@ def main():
                 date_from,
                 date_to,
             )
-            if result:
+            if result is not None:
                 all_daily.extend(result)
                 success += 1
             else:
                 errors.append(f"{sub['subscription_name']} ({sub['subscription_id'][:8]}...)")
+            # Brief pause between subscriptions to avoid immediate re-throttling
+            time.sleep(2)
 
     # Output
     if args.output_format in ("csv", "both"):
@@ -573,6 +600,15 @@ def main():
         for err in errors:
             print(f"    - {err}")
     print(f"{'═'*70}\n")
+
+    if success == 0:
+        print(
+            "ERROR: No subscriptions were processed successfully. "
+            "Verify tenant authentication (try running without --skip-login in the wrapper), "
+            "or pass --sp-client-id with --sp-client-secret/--sp-certificate.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 
 if __name__ == "__main__":
