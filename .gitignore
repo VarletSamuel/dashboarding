@@ -11,7 +11,7 @@ customers/
 extractor/__pycache__/
 helperscripts/__pycache__/
 reports/
-templates/YYYY-MM-DD_CUSTOMER_CostManagement.docx
+templates/*
 
 # IDE
 .venv/
