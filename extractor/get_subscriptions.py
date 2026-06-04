@@ -26,7 +26,7 @@ import os
 import re
 import sys
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import requests
@@ -276,9 +276,52 @@ def fetch_security_score_mapping(token: str, subscription_ids: list[str]) -> dic
 			continue
 
 		score = _extract_secure_score_percent(payload)
-		scores[sub_id] = f"{score:.2f}" if score is not None else ""
+		if score is None:
+			scores[sub_id] = ""
+			continue
+		# Normalize to score on 100 if API returns a fractional value (0.0-1.0).
+		if 0.0 <= score <= 1.0:
+			score = score * 100.0
+		scores[sub_id] = f"{score:.2f}"
 
 	return scores
+
+
+def fetch_resource_count_mapping(token: str, subscription_ids: list[str]) -> dict[str, int]:
+	"""Return total Azure resource count per subscription.
+
+	Uses the ARM resources list endpoint and follows paging links.
+	"""
+	counts: dict[str, int] = {}
+	headers = {"Authorization": f"Bearer {token}"}
+
+	for sub_id in subscription_ids:
+		if not sub_id:
+			continue
+		url = (
+			f"https://management.azure.com/subscriptions/{sub_id}/resources"
+			"?api-version=2021-04-01"
+		)
+		total = 0
+		try:
+			while url:
+				response = requests.get(url, headers=headers, timeout=120)
+				if response.status_code == 429:
+					retry_after = int(response.headers.get("Retry-After", "30"))
+					print(f"Throttled on resources list for {sub_id}, retrying in {retry_after}s...", flush=True)
+					time.sleep(retry_after)
+					continue
+				response.raise_for_status()
+				payload = response.json()
+				total += len(payload.get("value", []))
+				url = payload.get("nextLink")
+		except requests.HTTPError:
+			counts[sub_id] = 0
+			continue
+
+		counts[sub_id] = total
+
+	return counts
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +337,41 @@ def write_csv(path: Path, records: list[dict], fieldnames: list[str]):
 def write_json(path: Path, payload: dict):
 	with open(path, "w", encoding="utf-8") as handle:
 		json.dump(payload, handle, indent=2)
+
+
+def load_customer_azure_entries(input_path: str | None) -> tuple[dict[str, dict], list[dict]]:
+	"""Load customer azure entries keyed by subscription_id.
+
+	Returns:
+	  - map: {subscription_id -> entry}
+	  - ordered list of raw azure entries (for preserving non-visible subscriptions)
+	"""
+	if not input_path:
+		return {}, []
+
+	path = Path(input_path)
+	if not path.exists():
+		print(f"WARN: customer input file not found: {input_path}")
+		return {}, []
+
+	try:
+		payload = json.loads(path.read_text(encoding="utf-8"))
+	except Exception as exc:
+		print(f"WARN: could not parse customer input JSON ({input_path}): {exc}")
+		return {}, []
+
+	entries = []
+	entry_map: dict[str, dict] = {}
+	for item in payload.get("azure", []):
+		if not isinstance(item, dict):
+			continue
+		sub_id = (item.get("subscription_id") or "").strip()
+		if not sub_id:
+			continue
+		entries.append(item)
+		entry_map[sub_id] = item
+
+	return entry_map, entries
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +390,12 @@ def main():
 		"--output-dir",
 		default=".",
 		help="Directory for output files. Default: current directory.",
+	)
+	parser.add_argument(
+		"-i",
+		"--input",
+		default=None,
+		help="Optional customer JSON path to merge customer subscription status values.",
 	)
 	parser.add_argument(
 		"--output-format",
@@ -358,6 +442,7 @@ def main():
 
 	print("Fetching subscriptions...")
 	subscriptions = fetch_subscriptions(token)
+	customer_map, customer_entries = load_customer_azure_entries(args.input)
 
 	print("Resolving management groups...")
 	mg_mapping = fetch_management_group_mapping(token)
@@ -368,17 +453,53 @@ def main():
 		[sub.get("subscription_id", "") for sub in subscriptions],
 	)
 
+	print("Resolving resource counts...")
+	resource_count_mapping = fetch_resource_count_mapping(
+		token,
+		[sub.get("subscription_id", "") for sub in subscriptions],
+	)
+
+	snapshot_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 	rows = []
+	seen_sub_ids: set[str] = set()
 	for sub in subscriptions:
 		sub_id = sub["subscription_id"]
+		seen_sub_ids.add(sub_id)
+		customer_entry = customer_map.get(sub_id, {})
+		customer_status = str(customer_entry.get("status") or "").strip()
 		rows.append(
 			{
 				"tenant_id": sub["tenant_id"] or (args.tenant_id or ""),
 				"subscription_id": sub_id,
-				"subscription_name": sub["subscription_name"],
+				"subscription_name": sub["subscription_name"] or (customer_entry.get("subscription_name") or ""),
 				"subscription_status": sub["subscription_state"],
+				"customer_status": customer_status,
 				"management_group": mg_mapping.get(sub_id, ""),
 				"overall_security_score": security_score_mapping.get(sub_id, ""),
+				"resource_count": resource_count_mapping.get(sub_id, 0),
+				"snapshot_of": snapshot_utc,
+				"azure_portal_url": f"https://portal.azure.com/#@/resource/subscriptions/{sub_id}",
+			}
+		)
+
+	# Ensure all subscriptions declared in customer JSON are represented,
+	# even when they are not visible to the current principal.
+	for entry in customer_entries:
+		sub_id = (entry.get("subscription_id") or "").strip()
+		if not sub_id or sub_id in seen_sub_ids:
+			continue
+		rows.append(
+			{
+				"tenant_id": (entry.get("tenant_id") or args.tenant_id or "").strip(),
+				"subscription_id": sub_id,
+				"subscription_name": (entry.get("subscription_name") or "").strip(),
+				"subscription_status": "NotVisible",
+				"customer_status": str(entry.get("status") or "").strip(),
+				"management_group": "",
+				"overall_security_score": "",
+				"resource_count": 0,
+				"snapshot_of": snapshot_utc,
+				"azure_portal_url": f"https://portal.azure.com/#@/resource/subscriptions/{sub_id}",
 			}
 		)
 
@@ -404,8 +525,12 @@ def main():
 				"subscription_id",
 				"subscription_name",
 				"subscription_status",
+				"customer_status",
 				"management_group",
 				"overall_security_score",
+				"resource_count",
+				"snapshot_of",
+				"azure_portal_url",
 			],
 		)
 	if args.output_format in ("json", "both"):
