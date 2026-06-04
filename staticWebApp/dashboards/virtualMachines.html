@@ -157,6 +157,11 @@ function toBool(v) {
   if (s === 'false' || s === '0' || s === 'no') return false;
   return null;
 }
+function hybridBenefitLabel(v) {
+  if (v.hybrid_benefit_applicable === false) return 'Not applicable';
+  if (v.hybrid_benefit_active == null) return 'Not collected';
+  return v.hybrid_benefit_active ? 'Enabled' : 'Not enabled';
+}
 function pctCls(v) { if (v == null) return 'na'; if (v < 40) return 'low'; if (v < 75) return 'mid'; return 'high'; }
 function nvl(v, fb = '') { return (v == null || v === '') ? fb : v; }
 
@@ -287,6 +292,7 @@ function aggregate(summaryRows, tsRows) {
       location:             r.location || '',
       vm_size:              r.vm_size || '',
       os_type:              r.os_type || '',
+      os_detail:            r.os_detail || '',
       os_disk_sku:          r.os_disk_sku || '',
       os_disk_size_gb:      pi(r.os_disk_size_gb),
       data_disk_count:      pi(r.data_disk_count) || 0,
@@ -294,10 +300,12 @@ function aggregate(summaryRows, tsRows) {
       nic_count:            pi(r.nic_count),
       has_public_ip:        toBool(r.has_public_ip),
       public_ip_addresses:  r.public_ip_addresses || '',
+      public_ip_details:    r.public_ip_details || '',
       availability_zone:    r.availability_zone || '',
       availability_set:     r.availability_set || '',
       license_type:         r.license_type || '',
       hybrid_benefit_active: toBool(r.hybrid_benefit_active),
+      hybrid_benefit_applicable: toBool(r.hybrid_benefit_applicable),
       hybrid_benefit_description: r.hybrid_benefit_description || '',
       priority:             r.priority || '',
       eviction_policy:      r.eviction_policy || '',
@@ -454,9 +462,9 @@ function renderDetailTable() {
         <div style="font-size:11px;color:var(--text-dim)">${esc(v.resource_group)} · ${esc(v.location)}</div>
       </td>
       <td>${esc(v.vm_size)}</td>
-      <td>${esc(v.os_type)}</td>
-      <td>${v.has_public_ip == null || v.has_public_ip === '' ? 'Not collected' : (toBool(v.has_public_ip) ? 'Yes' : 'No')}</td>
-      <td title="${esc(v.hybrid_benefit_description || '')}">${v.hybrid_benefit_active == null ? 'Not collected' : (v.hybrid_benefit_active ? 'Enabled' : 'Not enabled')}</td>
+      <td title="${esc(v.os_detail || '')}">${esc(v.os_type)}</td>
+      <td title="${esc(v.public_ip_details || '')}">${v.has_public_ip == null || v.has_public_ip === '' ? 'Not collected' : (toBool(v.has_public_ip) ? 'Yes' : 'No')}</td>
+      <td title="${esc(v.hybrid_benefit_description || '')}">${hybridBenefitLabel(v)}</td>
       <td>${v.backup_configured === 'N/A' ? 'N/A' : v.backup_configured == null ? 'Not collected' : (v.backup_configured ? 'Yes' : 'No')}</td>
       <td>${v.backup_status === 'N/A' ? 'N/A' : v.backup_status ? esc(v.backup_status) : 'Not collected'}</td>
       <td>${v.backup_last_run === 'N/A' ? 'N/A' : v.backup_last_run ? esc(v.backup_last_run) : 'Not collected'}</td>
@@ -544,8 +552,9 @@ function renderVmCards() {
 
       <div class="meta-row">
         <span class="state-pill ${stateClass(v.power_state)}">${esc(v.power_state || '?')}</span>
-        <span class="meta-pill">${esc(v.os_type || 'Unknown OS')}</span>
+        <span class="meta-pill" title="${esc(v.os_detail || '')}">${esc(v.os_type || 'Unknown OS')}</span>
         <span class="meta-pill">${esc(v.vm_size || 'Unknown size')}</span>
+        ${v.has_public_ip ? `<span class="meta-pill" title="${esc(v.public_ip_details || v.public_ip_addresses || '')}">Public IP</span>` : ''}
         ${v.priority ? `<span class="meta-pill">${esc(v.priority)}</span>` : ''}
         ${disksLabel ? `<span class="meta-pill">${esc(disksLabel)}</span>` : ''}
         ${v.license_type ? `<span class="meta-pill">AHB: ${esc(v.license_type)}</span>` : ''}

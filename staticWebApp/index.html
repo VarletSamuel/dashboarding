@@ -18,6 +18,87 @@
 </script>
 <style>
 /* ── Portal: local overrides (if needed) ── */
+.active-customer-banner {
+  margin: 18px auto 0;
+  max-width: 720px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent, #0ea5e9) 35%, transparent);
+  background:
+    radial-gradient(120% 120% at 0% 0%, color-mix(in srgb, var(--accent, #0ea5e9) 16%, transparent), transparent 55%),
+    linear-gradient(135deg, color-mix(in srgb, var(--surface, #131a24) 92%, white 8%), color-mix(in srgb, var(--surface, #131a24) 85%, black 15%));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+}
+
+.active-customer-banner[data-state="none"] {
+  opacity: 0.86;
+  border-style: dashed;
+}
+
+.active-customer-banner[data-state="multi"] {
+  border-color: color-mix(in srgb, #f59e0b 42%, transparent);
+  background:
+    radial-gradient(120% 120% at 0% 0%, rgba(245, 158, 11, 0.15), transparent 55%),
+    linear-gradient(135deg, color-mix(in srgb, var(--surface, #131a24) 92%, white 8%), color-mix(in srgb, var(--surface, #131a24) 85%, black 15%));
+}
+
+.customer-badge-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  background: color-mix(in srgb, var(--accent, #0ea5e9) 22%, transparent);
+}
+
+.customer-badge-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.customer-badge-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted, #9ca3af);
+}
+
+#activeCustomerName {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: var(--text, #f8fafc);
+  line-height: 1.25;
+}
+
+#activeCustomerMode {
+  white-space: nowrap;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent, #0ea5e9) 20%, transparent);
+  color: var(--text, #f8fafc);
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+@media (max-width: 700px) {
+  .active-customer-banner {
+    grid-template-columns: auto 1fr;
+    row-gap: 8px;
+  }
+
+  #activeCustomerMode {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+}
 </style>
 </head>
 <body class="ambient-glow">
@@ -39,6 +120,14 @@
     <img src="assets/delaware-dee-rgb.png" alt="delaware" style="height:48px;margin-bottom:12px">
     <h1>delaware <span class="highlight">Pro-Active Managed Services</span></h1>
     <p>Your central hub for Azure insights. Upload exports, explore dashboards, and stay ahead of cost, compliance, security, and health across your cloud estate.</p>
+    <div class="active-customer-banner" id="activeCustomerBanner" data-state="none" aria-live="polite">
+      <span class="customer-badge-icon" aria-hidden="true">🎯</span>
+      <div class="customer-badge-content">
+        <span class="customer-badge-label">Loaded customer data</span>
+        <p id="activeCustomerName">No customer selected</p>
+      </div>
+      <span id="activeCustomerMode">No data source</span>
+    </div>
   </div>
 <!-- Admin Panel Modal -->
 <div class="admin-modal-overlay" id="adminModalOverlay">
@@ -325,6 +414,16 @@ const DASHBOARDS = [
   },
   {
     section: 'Resource specific (Data)',
+    title: 'Key Vaults',
+    description: 'Security and governance insights for Azure Key Vaults: quality scoring, RBAC adoption, network hardening, private endpoint coverage, and retention controls.',
+    url: 'dashboards/keyVaults.html',
+    dashboardId: 'keyVaults',
+    icon: '🔑',
+    iconBg: 'rgba(245, 158, 11, 0.12)',
+    status: 'active',
+  },
+  {
+    section: 'Resource specific (Data)',
     title: 'Azure SQL',
     description: 'SQL-specific insights and health metrics will be available here soon.',
     url: '#',
@@ -363,6 +462,16 @@ const DASHBOARDS = [
     status: 'active',
   },
   // ── Misc ──
+  {
+    section: 'Misc',
+    title: 'Entra ID App Registrations',
+    description: 'Track application credentials across tenants, including expired and soon-to-expire client secrets and certificates with app-level visibility.',
+    url: 'dashboards/entraIdAppRegistrations.html',
+    dashboardId: 'appSecretExpirations',
+    icon: '🪪',
+    iconBg: 'rgba(20, 184, 166, 0.14)',
+    status: 'active',
+  },
   {
     section: 'Misc',
     title: 'Network Components',
@@ -533,9 +642,26 @@ function getAvailableDashboardIdsFromFileNames(files) {
 
 function getManifestDashboardIdsForPortalCard(dashboardId) {
   if (dashboardId === 'quality_checks') {
-    return ['quality_checks', 'qualityChecks', 'keyVaults', 'storageAccounts', 'appServicePlans', 'sqlDatabases'];
+    return ['quality_checks', 'qualityChecks', 'virtualMachines', 'keyVaults', 'storageAccounts', 'appServicePlans', 'sqlDatabases'];
   }
   return [dashboardId];
+}
+
+function manifestHasAnyNonCostDashboard(manifest) {
+  if (!manifest) return false;
+
+  const hasNonCostDashboard = Array.isArray(manifest.dashboards) && manifest.dashboards.some(d => {
+    const id = String(d?.id || '');
+    if (!id || id === 'azureCosts') return false;
+    const files = Array.isArray(d?.files) ? d.files : [];
+    return files.length > 0;
+  });
+
+  const hasSubscriptionsOtherFile = Array.isArray(manifest.other_files) && manifest.other_files.some(f => {
+    return String(f?.type || '').toLowerCase() === 'subscriptions' && !!String(f?.filename || '').trim();
+  });
+
+  return hasNonCostDashboard || hasSubscriptionsOtherFile;
 }
 
 function findManifestInDataset(dataset) {
@@ -643,8 +769,9 @@ function initStorageConfig() {
 
     const manifest = findManifestInDataset(dataset);
     const folderLabel = String(dataset.label || datasetId);
-    if (manifest && manifest.customer) {
-      localFolderStatus.textContent = `Loaded local folder: ${folderLabel} (${dataset.files.length} file(s), customer ${manifest.customer})`;
+    const customerLabel = resolveManifestCustomerLabel(manifest);
+    if (customerLabel) {
+      localFolderStatus.textContent = `Loaded local folder: ${folderLabel} (${dataset.files.length} file(s), customer ${customerLabel})`;
     } else {
       localFolderStatus.textContent = `Loaded local folder: ${folderLabel} (${dataset.files.length} file(s), no manifest found)`;
     }
@@ -674,6 +801,7 @@ function initStorageConfig() {
     }
 
     await syncLocalFolderUi();
+    await refreshActiveCustomerNotation();
     if (hasSaved || hasLocal) checkManifestStatus();
   }
 
@@ -878,7 +1006,13 @@ async function checkManifestStatus() {
       document.querySelectorAll('.portal-card[data-dashboard-id]').forEach(card => {
         const id = card.dataset.dashboardId;
         const candidateIds = getManifestDashboardIdsForPortalCard(id);
-        const isAvailable = candidateIds.some(candidate => availableIds.has(candidate));
+        const qualityChecksRelaxed =
+          id === 'quality_checks' &&
+          (
+            (manifest && manifestHasAnyNonCostDashboard(manifest)) ||
+            [...availableIds].some(candidate => candidate !== 'azureCosts' && candidate !== '__manifest__')
+          );
+        const isAvailable = qualityChecksRelaxed || candidateIds.some(candidate => availableIds.has(candidate));
         card.classList.toggle('portal-card--pending', !isAvailable);
       });
       return;
@@ -916,7 +1050,10 @@ async function checkManifestStatus() {
     document.querySelectorAll('.portal-card[data-dashboard-id]').forEach(card => {
       const id = card.dataset.dashboardId;
       const candidateIds = getManifestDashboardIdsForPortalCard(id);
-      const isAvailable = candidateIds.some(candidate => availableIds.has(candidate));
+      const qualityChecksRelaxed =
+        id === 'quality_checks' &&
+        relevantManifests.some(m => manifestHasAnyNonCostDashboard(m.manifest));
+      const isAvailable = qualityChecksRelaxed || candidateIds.some(candidate => availableIds.has(candidate));
       card.classList.toggle('portal-card--pending', !isAvailable);
     });
   } catch (err) {
@@ -926,6 +1063,82 @@ async function checkManifestStatus() {
       card.classList.add('portal-card--pending');
     });
   }
+}
+
+function setActiveCustomerNotation(name, mode, state) {
+  const banner = document.getElementById('activeCustomerBanner');
+  const nameEl = document.getElementById('activeCustomerName');
+  const modeEl = document.getElementById('activeCustomerMode');
+  if (!banner || !nameEl || !modeEl) return;
+
+  nameEl.textContent = name;
+  modeEl.textContent = mode;
+  banner.setAttribute('data-state', state || 'none');
+}
+
+function resolveManifestCustomerLabel(manifest) {
+  if (!manifest || typeof manifest !== 'object') return '';
+  const fullCustomerName = String(manifest.customer_name || '').trim();
+  if (fullCustomerName) return fullCustomerName;
+
+  const directCustomer = String(manifest.customer || '').trim();
+  if (directCustomer) return directCustomer;
+
+  if (Array.isArray(manifest.customers)) {
+    const names = manifest.customers
+      .map(c => (typeof c === 'string' ? c : c?.id || c?.name || ''))
+      .map(v => String(v || '').trim())
+      .filter(Boolean);
+    if (names.length === 1) return names[0];
+    if (names.length > 1) return `${names.length} customers`;
+  }
+  return '';
+}
+
+async function refreshActiveCustomerNotation() {
+  const localActive = localStorage.getItem(LOCAL_DATASET_ACTIVE_KEY) === 'true';
+  const localDatasetId = localStorage.getItem(LOCAL_DATASET_ID_KEY);
+  const conn = localStorage.getItem(STORAGE_CONFIG_KEY);
+  const selectedFolder = localStorage.getItem(STORAGE_FOLDER_KEY) || '';
+
+  if (localActive && localDatasetId) {
+    try {
+      const dataset = await readLocalDataset(localDatasetId);
+      const manifest = findManifestInDataset(dataset);
+      const customerFromManifest = resolveManifestCustomerLabel(manifest);
+      const label = String(dataset?.label || '').trim();
+      const customerName = customerFromManifest || label || 'Local dataset loaded';
+      setActiveCustomerNotation(customerName, 'Local folder source', 'single');
+      return;
+    } catch {
+      setActiveCustomerNotation('Local dataset loaded', 'Local folder source', 'single');
+      return;
+    }
+  }
+
+  if (conn && selectedFolder) {
+    try {
+      const client = new AzureStorageClient(conn);
+      const manifests = await client.findManifests(selectedFolder);
+      const matchingManifest = manifests.find(m => {
+        const blobPath = String(m?.blob || '');
+        const firstPathSegment = blobPath.split('/')[0];
+        return firstPathSegment === selectedFolder || String(m?.manifest?.customer || '') === selectedFolder;
+      });
+      const fullName = resolveManifestCustomerLabel(matchingManifest?.manifest);
+      setActiveCustomerNotation(fullName || selectedFolder, 'Storage folder source', 'single');
+    } catch {
+      setActiveCustomerNotation(selectedFolder, 'Storage folder source', 'single');
+    }
+    return;
+  }
+
+  if (conn) {
+    setActiveCustomerNotation('All customers (folder not selected)', 'Storage source', 'multi');
+    return;
+  }
+
+  setActiveCustomerNotation('No customer selected', 'No data source', 'none');
 }
 
 function updateConnectionStatus(connected) {

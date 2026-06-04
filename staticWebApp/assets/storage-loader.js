@@ -387,6 +387,7 @@ function getManifestDashboardIds(dashboardId) {
     quality_checks: [
       'quality_checks',
       'qualityChecks',
+      'virtualMachines',
       'keyVaults',
       'storageAccounts',
       'appServicePlans',
@@ -394,6 +395,23 @@ function getManifestDashboardIds(dashboardId) {
     ],
   };
   return aliases[dashboardId] || [dashboardId];
+}
+
+function manifestSupportsQualityChecks(manifest) {
+  if (!manifest) return false;
+
+  const hasNonCostDashboard = Array.isArray(manifest.dashboards) && manifest.dashboards.some(d => {
+    const id = String(d?.id || '');
+    if (!id || id === 'azureCosts') return false;
+    const files = Array.isArray(d?.files) ? d.files : [];
+    return files.length > 0;
+  });
+
+  const hasSubscriptionsOtherFile = Array.isArray(manifest.other_files) && manifest.other_files.some(f => {
+    return String(f?.type || '').toLowerCase() === 'subscriptions' && !!String(f?.filename || '').trim();
+  });
+
+  return hasNonCostDashboard || hasSubscriptionsOtherFile;
 }
 
 function shouldMergeByTypeForDashboard(dashboardId) {
@@ -449,10 +467,12 @@ function inferDashboardFilesFromLocal(dashboardId, datasetFiles) {
       { type: 'summary', re: /_reserved_instances_/i },
     ],
     quality_checks: [
+      { type: 'summary', re: /_virtual_machines_summary_/i },
       { type: 'summary', re: /_keyvaults_summary_/i },
       { type: 'summary', re: /_storage_accounts_summary_/i },
       { type: 'summary', re: /_app_service_plans_summary_/i },
       { type: 'summary', re: /_sql_summary_/i },
+      { type: 'subscriptions', re: /^subscriptions_.*\.csv$/i },
     ],
   };
 
@@ -510,13 +530,32 @@ async function loadLocalFilesForDashboard(dashboardId, onStep) {
           const key = `${fileInfo.type}|${getBasename(matched.name || fileInfo.filename)}`;
           if (seen.has(key)) return;
           seen.add(key);
-          loaded.push({
+            loaded.push({
+              export_generated_at_utc: fileInfo.export_generated_at_utc || '',
             name: getBasename(matched.name || fileInfo.filename),
             type: fileInfo.type,
             content: matched.content || '',
           });
         });
       });
+
+      if (dashboardId === 'quality_checks' && Array.isArray(manifest.other_files)) {
+        manifest.other_files
+          .filter(f => String(f.type || '').toLowerCase() === 'subscriptions')
+          .forEach(fileInfo => {
+            const matched = matchLocalFile(dataset.files, fileInfo.filename);
+            if (!matched) return;
+            if (!hasCsvDataRows(matched.content || '')) return;
+            const key = `subscriptions|${getBasename(matched.name || fileInfo.filename)}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            loaded.push({
+              name: getBasename(matched.name || fileInfo.filename),
+              type: 'subscriptions',
+              content: matched.content || '',
+            });
+          });
+      }
       return loaded;
     }
   }
@@ -548,7 +587,9 @@ async function initStorageFileLoader(dashboardId, onStep) {
     try {
       step('Loading from local folder…');
       const localFiles = await loadLocalFilesForDashboard(dashboardId, step);
-      const normalized = mergeLoadedFilesByType(localFiles || []);
+      const normalized = shouldMergeByTypeForDashboard(dashboardId)
+        ? mergeLoadedFilesByType(localFiles || [])
+        : (localFiles || []);
       if (normalized.length > 0) {
         if (typeof onFilesLoaded === 'function') {
           onFilesLoaded(normalized);
@@ -624,6 +665,10 @@ async function initStorageFileLoader(dashboardId, onStep) {
       return m.manifest.dashboards?.some(d => candidateDashboardIds.includes(d.id));
     });
 
+    if (dashboardId === 'quality_checks' && relevantManifests.length === 0) {
+      relevantManifests = manifests.filter(m => manifestSupportsQualityChecks(m.manifest));
+    }
+
     if (selectedFolder) {
       relevantManifests = relevantManifests.filter(m => {
         const blobPath = m.blob || '';
@@ -651,9 +696,11 @@ async function initStorageFileLoader(dashboardId, onStep) {
     console.log(`✓ [storage-loader] Using manifest: ${manifest.blob} (Generated: ${manifest.manifest.generated_at})`);
 
     // Load files for this dashboard (supports composite IDs like quality_checks)
-    const dashboards = manifest.manifest.dashboards.filter(d => candidateDashboardIds.includes(d.id));
+    const dashboards = (manifest.manifest.dashboards || []).filter(d => candidateDashboardIds.includes(d.id));
     const totalDashboardFiles = dashboards.reduce((sum, d) => sum + ((d.files || []).length), 0);
-    if (!dashboards.length || !totalDashboardFiles) {
+    const hasSubscriptionsOtherFile = dashboardId === 'quality_checks' && Array.isArray(manifest.manifest.other_files)
+      && manifest.manifest.other_files.some(f => String(f?.type || '').toLowerCase() === 'subscriptions');
+    if ((!dashboards.length || !totalDashboardFiles) && !hasSubscriptionsOtherFile) {
       console.log(`❌ [storage-loader] No files defined in manifest for dashboard: ${dashboardId}`);
       return false;
     }
@@ -668,6 +715,20 @@ async function initStorageFileLoader(dashboardId, onStep) {
       const filesForSection = await loadFilesFromManifest(client, manifest, dashboard, step, selectedFolder);
       loadedFiles.push(...filesForSection);
     }
+
+    if (dashboardId === 'quality_checks' && Array.isArray(manifest.manifest.other_files)) {
+      const subsEntries = manifest.manifest.other_files
+        .filter(f => String(f.type || '').toLowerCase() === 'subscriptions');
+      for (const entry of subsEntries) {
+        try {
+          const resolved = await loadSingleManifestFile(client, manifest, entry, selectedFolder);
+          if (resolved) loadedFiles.push(resolved);
+        } catch (err) {
+          console.warn(`[storage-loader] Could not load subscriptions file '${entry.filename}': ${err.message}`);
+        }
+      }
+    }
+
     const normalizedFiles = shouldMergeByTypeForDashboard(dashboardId)
       ? mergeLoadedFilesByType(loadedFiles)
       : loadedFiles;
@@ -757,6 +818,7 @@ async function loadFilesFromManifest(client, manifest, dashboard, onStep, select
         name: resolvedName,
         type: fileInfo.type,
         content: content,
+          export_generated_at_utc: fileInfo.export_generated_at_utc || '',
       });
     } catch (err) {
       console.error(`   ✗ Failed to load ${fileInfo.type}: ${fileInfo.filename}`, err.message);
@@ -764,6 +826,47 @@ async function loadFilesFromManifest(client, manifest, dashboard, onStep, select
   }
 
   return files;
+}
+
+async function loadSingleManifestFile(client, manifest, fileInfo, selectedFolder = '') {
+  const containerName = manifest.container;
+  const normalizedFolder = String(selectedFolder || '').trim().replace(/^\/+|\/+$/g, '');
+  const rawName = String(fileInfo.filename || '').replace(/^\/+/, '');
+  const candidates = [];
+
+  if (normalizedFolder && !rawName.includes('/')) {
+    candidates.push(`${normalizedFolder}/${rawName}`);
+  }
+  if (!normalizedFolder || rawName.includes('/')) {
+    candidates.push(rawName);
+  }
+
+  let content = null;
+  let resolvedName = rawName;
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      content = await client.downloadBlob(containerName, candidate);
+      resolvedName = candidate;
+      break;
+    } catch (candidateErr) {
+      lastError = candidateErr;
+    }
+  }
+
+  if (content === null) {
+    throw lastError || new Error(`Failed to download any candidate for ${rawName}`);
+  }
+  if (!hasCsvDataRows(content)) {
+    return null;
+  }
+
+  return {
+    name: resolvedName,
+    type: fileInfo.type || 'summary',
+    content,
+      export_generated_at_utc: fileInfo.export_generated_at_utc || '',
+  };
 }
 
 function mergeCsvContents(csvContents) {

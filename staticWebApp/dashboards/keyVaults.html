@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Azure Key Vault Dashboard</title>
+<link rel="icon" type="image/png" href="../assets/delaware-dee-rgb.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/dashboard-core.css">
+<script src="../assets/storage-loader.js"></script>
+<script src="../assets/filter-bar-helper.js"></script>
+<script>
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+<style>
+.kv-table-wrap { overflow-x: auto; }
+.storage-chart-wrap { position: relative; height: 320px; }
+.kv-table td:nth-child(1),
+.kv-table th:nth-child(1) { position: sticky; left: 0; z-index: 2; background: var(--surface); }
+.kv-badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; display: inline-block; }
+.kv-badge.ok { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); }
+.kv-badge.warn { background: color-mix(in srgb, var(--orange) 18%, transparent); color: var(--orange); }
+.kv-badge.bad { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
+.kv-chip { display: inline-block; padding: 2px 7px; border-radius: 8px; border: 1px solid var(--border); font-size: 10px; color: var(--text-dim); margin-right: 4px; }
+.resource-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  font-weight: 600;
+}
+</style>
+</head>
+<body class="ambient-glow">
+
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+  <h1>Azure Key Vault Dashboard</h1>
+  <p>Upload the <strong>key vault summary CSV</strong> exported by <code>get_keyvaults.py</code>.<br>Files are parsed locally in your browser.</p>
+  <div id="upload-zone" class="drop-zone" style="max-width:520px;margin:0 auto">
+    <div class="icon">🔑</div>
+    <div class="label">Drop your Key Vault CSV file here</div>
+    <div class="hint">Expected: *_keyvaults_summary_*.csv</div>
+  </div>
+  <input type="file" id="file-input" accept=".csv" style="display:none" title="Expected file: *_keyvaults_summary_*.csv">
+  <div id="upload-status" style="display:none;font-size:12px;color:var(--text-dim);text-align:center"></div>
+  <div style="margin-top:8px;color:var(--text-dim);font-size:13px;text-align:center">- or -</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+    <button class="btn btn--ghost" onclick="loadDemo()">Load Demo Data</button>
+  </div>
+</div>
+
+<div id="dashboardScreen" style="display:none">
+  <div class="topbar">
+    <h1><img src="../assets/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle"><span id="dashTitle">Azure Key Vault Dashboard</span></h1>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+      <button class="topbar-btn" id="reloadBtn">↩ Load another CSV</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+
+  <div class="filter-bar" id="filterBar"></div>
+  <div class="kpi-row" id="kpis"></div>
+
+  <div class="env-section">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+      <div class="env-icon">▼</div>
+      <h2>Security and Compliance Overview</h2>
+      <span class="env-summary" id="overviewSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-2">
+          <div class="card">
+            <h2>Quality Score Distribution</h2>
+            <div class="storage-chart-wrap"><canvas id="qualityChart"></canvas></div>
+          </div>
+          <div class="card">
+            <h2>Key Hardening Controls</h2>
+            <div class="storage-chart-wrap"><canvas id="controlsChart"></canvas></div>
+          </div>
+        </div>
+        <div class="row row-full" style="margin-top:12px">
+          <div class="card">
+            <h2>Subscription Overview</h2>
+            <div class="kv-table-wrap"><table class="summary-table" id="subscriptionTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="env-section">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+      <div class="env-icon">▼</div>
+      <h2>Key Vault Detail</h2>
+      <span class="env-summary" id="detailSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full">
+          <div class="card">
+            <div class="kv-table-wrap"><table class="summary-table kv-table" id="detailTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let ALL_ROWS = [];
+let FILTER_OPTIONS = {};
+let ACTIVE_FILTERS = {};
+let LOADED_FILE = '';
+let QUALITY_CHART = null;
+let CONTROLS_CHART = null;
+
+const FILTER_DEFS = [
+  { key: 'subscription', label: 'Subscription', icon: '📋' },
+  { key: 'location', label: 'Location', icon: '📍' },
+  { key: 'sku_name', label: 'SKU', icon: '⭐' },
+  { key: 'authorization_mechanism', label: 'Authorization', icon: '🔐' },
+  { key: 'public_network_access', label: 'Public Network', icon: '🌐' },
+  { key: 'default_action', label: 'Firewall Action', icon: '🧱' },
+];
+
+function escHtml(v) {
+  return String(v || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function toBool(v) {
+  const s = String(v || '').trim().toLowerCase();
+  return ['true', '1', 'yes', 'y', 'enabled'].includes(s);
+}
+
+function parseNum(v) {
+  if (v === '' || v == null) return null;
+  const n = parseFloat(String(v).replace(',', '.'));
+  return Number.isFinite(n) ? n : null;
+}
+
+function buildAzurePortalResourceUrl(resourceId) {
+  const id = String(resourceId || '').trim();
+  if (!id) return '';
+  return `https://portal.azure.com/#@/resource${id}`;
+}
+
+function parseCSV(text) {
+  if (!text) return [];
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const lines = text.split(/\r?\n/).filter(line => line.trim());
+  if (lines.length < 2) return [];
+
+  const headers = lines[0].split(';').map(v => v.trim().toLowerCase());
+  return lines.slice(1).map(line => {
+    const cols = line.split(';');
+    const row = {};
+    headers.forEach((h, idx) => { row[h] = (cols[idx] || '').trim(); });
+
+    row.name = row.name || row.key_vault_name || '';
+    row.subscription = row.subscription_name || row.subscription_id || '';
+    row.location = row.location || '';
+    row.sku_name = row.sku_name || row.sku || '';
+    row.authorization_mechanism = row.authorization_mechanism || (toBool(row.enable_rbac_authorization) ? 'RBAC' : 'Access Policies');
+    row.private_endpoint_count_num = parseInt(row.private_endpoint_count, 10) || 0;
+    row.soft_delete_retention_days_num = parseInt(row.soft_delete_retention_days, 10) || 0;
+
+    row.soft_delete_enabled_b = toBool(row.soft_delete_enabled || row.enable_soft_delete);
+    row.purge_protection_enabled_b = toBool(row.purge_protection_enabled || row.enable_purge_protection);
+    row.rbac_enabled_b = toBool(row.enable_rbac_authorization) || String(row.authorization_mechanism || '').toLowerCase() === 'rbac';
+    row.firewall_deny_b = String(row.default_action || '').toLowerCase() === 'deny';
+    row.private_endpoint_b = row.private_endpoint_count_num > 0;
+    row.retention_90_b = row.soft_delete_retention_days_num >= 90;
+    row.has_tags_b = String(row.tags || '').trim() !== '';
+
+    row.security_score_num = parseNum(row.security_score);
+    row.compliance_score_num = parseNum(row.compliance_score);
+    row.quality_score_num = parseNum(row.quality_score);
+
+    return row;
+  });
+}
+
+function avg(values) {
+  const nums = (values || []).filter(v => v != null);
+  if (!nums.length) return null;
+  return nums.reduce((a, b) => a + b, 0) / nums.length;
+}
+
+function fmtInt(v) {
+  return Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+
+function fmtNum(v, digits = 1) {
+  if (v == null) return '0.0';
+  return Number(v).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+function extractFilterOptions(rows) {
+  const out = {
+    subscription: new Set(),
+    location: new Set(),
+    sku_name: new Set(),
+    authorization_mechanism: new Set(),
+    public_network_access: new Set(),
+    default_action: new Set(),
+  };
+
+  rows.forEach(r => {
+    if (r.subscription) out.subscription.add(r.subscription);
+    if (r.location) out.location.add(r.location);
+    if (r.sku_name) out.sku_name.add(r.sku_name);
+    if (r.authorization_mechanism) out.authorization_mechanism.add(r.authorization_mechanism);
+    if (r.public_network_access) out.public_network_access.add(r.public_network_access);
+    if (r.default_action) out.default_action.add(r.default_action);
+  });
+
+  return {
+    subscription: [...out.subscription].sort(),
+    location: [...out.location].sort(),
+    sku_name: [...out.sku_name].sort(),
+    authorization_mechanism: [...out.authorization_mechanism].sort(),
+    public_network_access: [...out.public_network_access].sort(),
+    default_action: [...out.default_action].sort(),
+  };
+}
+
+function initFilters() {
+  ACTIVE_FILTERS = {};
+  FILTER_DEFS.forEach(def => { ACTIVE_FILTERS[def.key] = new Set(); });
+}
+
+function filteredRows() {
+  return ALL_ROWS.filter(row => {
+    for (const def of FILTER_DEFS) {
+      const selected = ACTIVE_FILTERS[def.key];
+      if (selected && selected.size && !selected.has(row[def.key] || '')) return false;
+    }
+    return true;
+  });
+}
+
+function qualityBucket(score) {
+  if (score == null) return 'Unknown';
+  if (score >= 85) return 'Excellent (85-100)';
+  if (score >= 70) return 'Good (70-84)';
+  if (score >= 50) return 'Needs Attention (50-69)';
+  return 'Critical (<50)';
+}
+
+function statusBadge(ok) {
+  return `<span class="kv-badge ${ok ? 'ok' : 'bad'}">${ok ? 'PASS' : 'FAIL'}</span>`;
+}
+
+function renderKpis(rows) {
+  const el = document.getElementById('kpis');
+  if (!rows.length) {
+    el.innerHTML = '<div class="kpi"><div class="label">No data</div><div class="value">-</div></div>';
+    return;
+  }
+
+  const avgQuality = avg(rows.map(r => r.quality_score_num));
+  const avgSecurity = avg(rows.map(r => r.security_score_num));
+  const avgCompliance = avg(rows.map(r => r.compliance_score_num));
+  const netRestricted = rows.filter(r => r.firewall_deny_b).length;
+  const privateEp = rows.filter(r => r.private_endpoint_b).length;
+  const critical = rows.filter(r => (r.quality_score_num || 0) < 50).length;
+
+  el.innerHTML = `
+    <div class="kpi"><div class="label">Key Vaults</div><div class="value">${fmtInt(rows.length)}</div></div>
+    <div class="kpi"><div class="label">Avg Quality Score</div><div class="value mono">${fmtNum(avgQuality)}</div></div>
+    <div class="kpi"><div class="label">Avg Security Score</div><div class="value mono">${fmtNum(avgSecurity)}</div></div>
+    <div class="kpi"><div class="label">Avg Compliance Score</div><div class="value mono">${fmtNum(avgCompliance)}</div></div>
+    <div class="kpi"><div class="label">Firewall Default Deny</div><div class="value">${fmtInt(netRestricted)}</div><div class="sub-value">vaults with restricted network ACL</div></div>
+    <div class="kpi"><div class="label">Private Endpoints</div><div class="value">${fmtInt(privateEp)}</div><div class="sub-value">vaults with >= 1 endpoint</div></div>
+    <div class="kpi"><div class="label">Critical Quality</div><div class="value">${fmtInt(critical)}</div><div class="sub-value">quality score < 50</div></div>`;
+
+  document.getElementById('overviewSummary').textContent = `${fmtInt(rows.length)} vault(s) in current filter set`;
+  document.getElementById('detailSummary').textContent = `${fmtInt(rows.length)} visible row(s)`;
+}
+
+function renderSubscriptionTable(rows) {
+  const bySub = new Map();
+  rows.forEach(r => {
+    const key = r.subscription || '-';
+    if (!bySub.has(key)) {
+      bySub.set(key, {
+        subscription: key,
+        count: 0,
+        quality: [],
+        security: [],
+        compliance: [],
+        privateEp: 0,
+        restricted: 0,
+      });
+    }
+    const bucket = bySub.get(key);
+    bucket.count++;
+    if (r.quality_score_num != null) bucket.quality.push(r.quality_score_num);
+    if (r.security_score_num != null) bucket.security.push(r.security_score_num);
+    if (r.compliance_score_num != null) bucket.compliance.push(r.compliance_score_num);
+    if (r.private_endpoint_b) bucket.privateEp++;
+    if (r.firewall_deny_b) bucket.restricted++;
+  });
+
+  const entries = [...bySub.values()].sort((a, b) => b.count - a.count || a.subscription.localeCompare(b.subscription));
+  const html = `
+    <thead>
+      <tr>
+        <th>Subscription</th>
+        <th style="text-align:right">Vaults</th>
+        <th style="text-align:right">Avg Quality</th>
+        <th style="text-align:right">Avg Security</th>
+        <th style="text-align:right">Avg Compliance</th>
+        <th style="text-align:right">Private EP</th>
+        <th style="text-align:right">Firewall Deny</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${entries.map(e => `
+        <tr>
+          <td>${escHtml(e.subscription)}</td>
+          <td style="text-align:right">${fmtInt(e.count)}</td>
+          <td style="text-align:right">${fmtNum(avg(e.quality))}</td>
+          <td style="text-align:right">${fmtNum(avg(e.security))}</td>
+          <td style="text-align:right">${fmtNum(avg(e.compliance))}</td>
+          <td style="text-align:right">${fmtInt(e.privateEp)}</td>
+          <td style="text-align:right">${fmtInt(e.restricted)}</td>
+        </tr>`).join('')}
+    </tbody>`;
+
+  document.getElementById('subscriptionTable').innerHTML = html;
+}
+
+function renderCharts(rows) {
+  if (QUALITY_CHART) { QUALITY_CHART.destroy(); QUALITY_CHART = null; }
+  if (CONTROLS_CHART) { CONTROLS_CHART.destroy(); CONTROLS_CHART = null; }
+
+  const labels = ['Excellent (85-100)', 'Good (70-84)', 'Needs Attention (50-69)', 'Critical (<50)', 'Unknown'];
+  const counts = labels.map(label => rows.filter(r => qualityBucket(r.quality_score_num) === label).length);
+
+  const green = getComputedStyle(document.documentElement).getPropertyValue('--green').trim() || '#76d077';
+  const red = getComputedStyle(document.documentElement).getPropertyValue('--red').trim() || '#d92329';
+  const orange = getComputedStyle(document.documentElement).getPropertyValue('--orange').trim() || '#f59e0b';
+  const blue = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#4f7cff';
+  const dim = getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim() || '#8892a4';
+
+  QUALITY_CHART = new Chart(document.getElementById('qualityChart').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Vaults',
+        data: counts,
+        backgroundColor: [green, '#8ac57f', orange, red, dim],
+        borderWidth: 0,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { beginAtZero: true, ticks: { precision: 0 } },
+      },
+    },
+  });
+
+  const controls = [
+    { label: 'Soft Delete', pass: rows.filter(r => r.soft_delete_enabled_b).length },
+    { label: 'Purge Protection', pass: rows.filter(r => r.purge_protection_enabled_b).length },
+    { label: 'RBAC Auth', pass: rows.filter(r => r.rbac_enabled_b).length },
+    { label: 'Firewall Deny', pass: rows.filter(r => r.firewall_deny_b).length },
+    { label: 'Private Endpoint', pass: rows.filter(r => r.private_endpoint_b).length },
+    { label: '>=90d Retention', pass: rows.filter(r => r.retention_90_b).length },
+    { label: 'Tagged', pass: rows.filter(r => r.has_tags_b).length },
+  ];
+
+  CONTROLS_CHART = new Chart(document.getElementById('controlsChart').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: controls.map(c => c.label),
+      datasets: [
+        {
+          label: 'Pass',
+          data: controls.map(c => c.pass),
+          backgroundColor: green,
+          stack: 'checks',
+        },
+        {
+          label: 'Fail',
+          data: controls.map(c => Math.max(0, rows.length - c.pass)),
+          backgroundColor: red,
+          stack: 'checks',
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom' } },
+      scales: {
+        x: { stacked: true },
+        y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } },
+      },
+    },
+  });
+}
+
+function renderDetailTable(rows) {
+  const sorted = [...rows].sort((a, b) => {
+    const aq = a.quality_score_num == null ? -1 : a.quality_score_num;
+    const bq = b.quality_score_num == null ? -1 : b.quality_score_num;
+    return aq - bq || (a.name || '').localeCompare(b.name || '');
+  });
+
+  const html = `
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Subscription</th>
+        <th>Resource Group</th>
+        <th>SKU</th>
+        <th>Location</th>
+        <th>Auth</th>
+        <th>Public Network</th>
+        <th>Firewall</th>
+        <th>Private EPs</th>
+        <th>Retention</th>
+        <th>Soft Delete</th>
+        <th>Purge Protection</th>
+        <th>RBAC</th>
+        <th>Tagged</th>
+        <th style="text-align:right">Quality</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${sorted.map(r => {
+        const retentionLabel = r.soft_delete_retention_days_num ? `${r.soft_delete_retention_days_num}d` : '-';
+        const qualityValue = r.quality_score_num == null ? '-' : fmtNum(r.quality_score_num);
+        const resourceId = r.key_vault_id || r.resource_id || r.id || '';
+        const portalUrl = buildAzurePortalResourceUrl(resourceId);
+        const nameCell = portalUrl
+          ? `<a class="resource-link" href="${escHtml(portalUrl)}" target="_blank" rel="noopener noreferrer" title="Open in Azure Portal">${escHtml(r.name)}</a>`
+          : escHtml(r.name);
+        return `
+          <tr>
+            <td title="${escHtml(r.name)}">${nameCell}</td>
+            <td>${escHtml(r.subscription)}</td>
+            <td>${escHtml(r.resource_group || '')}</td>
+            <td>${escHtml(r.sku_name || '')}</td>
+            <td>${escHtml(r.location || '')}</td>
+            <td>${escHtml(r.authorization_mechanism || '')}</td>
+            <td>${escHtml(r.public_network_access || '')}</td>
+            <td>${escHtml(r.default_action || '')}</td>
+            <td>${fmtInt(r.private_endpoint_count_num)}</td>
+            <td>${retentionLabel}</td>
+            <td>${statusBadge(r.soft_delete_enabled_b)}</td>
+            <td>${statusBadge(r.purge_protection_enabled_b)}</td>
+            <td>${statusBadge(r.rbac_enabled_b)}</td>
+            <td>${statusBadge(r.has_tags_b)}</td>
+            <td style="text-align:right">${qualityValue}</td>
+          </tr>`;
+      }).join('')}
+    </tbody>`;
+
+  document.getElementById('detailTable').innerHTML = html;
+}
+
+function renderAll(rows) {
+  renderKpis(rows);
+  renderCharts(rows);
+  renderSubscriptionTable(rows);
+  renderDetailTable(rows);
+  document.getElementById('dashMeta').textContent = `${fmtInt(rows.length)} key vault(s) in current view`;
+}
+
+function applyFilters() {
+  renderAll(filteredRows());
+}
+
+function updateUploadStatus(text) {
+  const el = document.getElementById('upload-status');
+  if (!text) {
+    el.style.display = 'none';
+    el.textContent = '';
+    return;
+  }
+  el.style.display = 'block';
+  el.textContent = text;
+}
+
+function destroyCharts() {
+  if (QUALITY_CHART) { QUALITY_CHART.destroy(); QUALITY_CHART = null; }
+  if (CONTROLS_CHART) { CONTROLS_CHART.destroy(); CONTROLS_CHART = null; }
+}
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const rows = parseCSV(reader.result || '');
+      if (!rows.length) throw new Error('No rows found in file.');
+      if (!rows[0].key_vault_name && !rows[0].name && !rows[0].vault_uri) {
+        throw new Error('This does not look like a key vault summary export.');
+      }
+
+      ALL_ROWS = rows;
+      LOADED_FILE = file.name;
+      FILTER_OPTIONS = extractFilterOptions(rows);
+      initFilters();
+      buildFilterBar();
+      applyFilters();
+
+      document.getElementById('uploadScreen').style.display = 'none';
+      document.getElementById('dashboardScreen').style.display = 'block';
+      updateUploadStatus(`Loaded ${file.name}`);
+    } catch (err) {
+      alert('Could not parse file: ' + err.message);
+      updateUploadStatus('Failed to parse file. Please verify the exporter output.');
+    }
+  };
+  reader.onerror = () => {
+    alert('Could not read file.');
+    updateUploadStatus('Failed to read file.');
+  };
+  reader.readAsText(file, 'utf-8');
+}
+
+const zone = document.getElementById('upload-zone');
+const fileInput = document.getElementById('file-input');
+zone.addEventListener('click', () => fileInput.click());
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+zone.addEventListener('drop', e => {
+  e.preventDefault();
+  zone.classList.remove('drag-over');
+  const file = e.dataTransfer.files?.[0];
+  if (file) handleFile(file);
+});
+fileInput.addEventListener('change', event => {
+  const file = event.target.files?.[0];
+  if (file) handleFile(file);
+  fileInput.value = '';
+});
+
+document.getElementById('reloadBtn').addEventListener('click', () => {
+  destroyCharts();
+  ALL_ROWS = [];
+  FILTER_OPTIONS = {};
+  ACTIVE_FILTERS = {};
+  LOADED_FILE = '';
+  updateUploadStatus('');
+  document.getElementById('dashboardScreen').style.display = 'none';
+  document.getElementById('uploadScreen').style.display = 'flex';
+});
+
+function loadDemo() {
+  const demo = [
+    {
+      subscription_name: 'dp-prd-sub', subscription_id: 'demo-dp-prd-sub', resource_group: 'rg-security',
+      key_vault_name: 'kv-dp-prd-01', location: 'francecentral', sku_name: 'standard', authorization_mechanism: 'RBAC',
+      enable_rbac_authorization: 'True', soft_delete_enabled: 'True', purge_protection_enabled: 'True', public_network_access: 'Disabled',
+      default_action: 'Deny', private_endpoint_count: '2', soft_delete_retention_days: '90', tags: 'env=prd,owner=platform',
+      security_score: '96', compliance_score: '92', quality_score: '94',
+    },
+    {
+      subscription_name: 'dp-prd-sub', subscription_id: 'demo-dp-prd-sub', resource_group: 'rg-data',
+      key_vault_name: 'kv-dp-prd-02', location: 'francecentral', sku_name: 'premium', authorization_mechanism: 'Access Policies',
+      enable_rbac_authorization: 'False', soft_delete_enabled: 'True', purge_protection_enabled: 'False', public_network_access: 'Enabled',
+      default_action: 'Allow', private_endpoint_count: '0', soft_delete_retention_days: '30', tags: '',
+      security_score: '54', compliance_score: '61', quality_score: '58',
+    },
+    {
+      subscription_name: 'dp-dev-sub', subscription_id: 'demo-dp-dev-sub', resource_group: 'rg-dev-sec',
+      key_vault_name: 'kv-dp-dev-01', location: 'westeurope', sku_name: 'standard', authorization_mechanism: 'RBAC',
+      enable_rbac_authorization: 'True', soft_delete_enabled: 'True', purge_protection_enabled: 'True', public_network_access: 'Enabled',
+      default_action: 'Deny', private_endpoint_count: '0', soft_delete_retention_days: '90', tags: 'env=dev',
+      security_score: '79', compliance_score: '82', quality_score: '80',
+    },
+  ];
+
+  const headers = Object.keys(demo[0]);
+  const lines = [headers.join(';')].concat(
+    demo.map(row => headers.map(h => String(row[h] || '')).join(';'))
+  );
+  const csv = lines.join('\n');
+  handleFile(new File([csv], 'demo_keyvaults_summary.csv', { type: 'text/csv' }));
+}
+
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('dco-theme', next);
+  if (ALL_ROWS.length) applyFilters();
+}
+
+document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+document.getElementById('themeToggleUpload').addEventListener('click', toggleTheme);
+
+function ensureStorageSpinner() {
+  let spinner = document.getElementById('storageSpinner');
+  if (spinner) return spinner;
+
+  spinner = document.createElement('div');
+  spinner.id = 'storageSpinner';
+  spinner.innerHTML = '<div class="spinner-ring"></div><div class="spinner-label">Loading data from Azure Storage...<div class="spinner-step" id="spinnerStep">Connecting...</div></div>';
+  document.getElementById('uploadScreen').insertBefore(spinner, document.getElementById('uploadScreen').children[1]);
+  return spinner;
+}
+
+function setStorageSpinner(stepText) {
+  const spinner = ensureStorageSpinner();
+  const stepEl = document.getElementById('spinnerStep');
+  if (stepEl && stepText) stepEl.textContent = stepText;
+
+  const uploadScreen = document.getElementById('uploadScreen');
+  if (uploadScreen) {
+    Array.from(uploadScreen.children).forEach(el => {
+      if (el.id === 'storageSpinner') return;
+      if (el.dataset.prevDisplay === undefined) el.dataset.prevDisplay = el.style.display || '';
+      el.style.display = 'none';
+    });
+  }
+
+  spinner.style.display = 'flex';
+}
+
+function hideStorageSpinner() {
+  const spinner = document.getElementById('storageSpinner');
+  if (spinner) spinner.style.display = 'none';
+
+  const uploadScreen = document.getElementById('uploadScreen');
+  if (uploadScreen) {
+    Array.from(uploadScreen.children).forEach(el => {
+      if (el.id === 'storageSpinner') return;
+      const prev = el.dataset.prevDisplay !== undefined ? el.dataset.prevDisplay : '';
+      el.style.display = prev;
+      delete el.dataset.prevDisplay;
+    });
+  }
+}
+
+window.onFilesLoaded = function(loadedFiles) {
+  const organized = organizeLoadedFiles(loadedFiles);
+  if (organized.summaryContent) {
+    handleFile(new File([organized.summaryContent], 'keyvaults_summary.csv', { type: 'text/csv' }));
+  }
+};
+
+async function autoLoadFromStorage() {
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+
+  if (hasConnection) {
+    setStorageSpinner('Connecting...');
+  }
+
+  const loaded = await initStorageFileLoader('keyVaults', step => {
+    setStorageSpinner(step || 'Loading...');
+  });
+
+  if (!loaded) {
+    hideStorageSpinner();
+    showFileUploadUI();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+</script>
+<script src="../assets/table-sort.js"></script>
+</body>
+</html>
