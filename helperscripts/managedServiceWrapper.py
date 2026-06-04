@@ -23,7 +23,7 @@ Scripts run (in order):
     7. get_appserviceplans.py
     8. get_storage_accounts.py
     9. get_keyvaults.py
-    10. check_app_secrets_expiry.py
+    10. get_app_secrets_expiry.py
     11. get_postgresql.py
     12. get_sql.py
     13. get_eventhubnamespaces.py
@@ -38,7 +38,7 @@ Usage
     python managedServiceWrapper.py -c CUST -i ../customers/CUST.json --output-dir ../reports
     python managedServiceWrapper.py -c CUST --from 2026-02-01 --to 2026-04-20
     python managedServiceWrapper.py -c CUST --lookback PT6H
-    python managedServiceWrapper.py -c CUST --skip get_subscriptions get_daily_costs get_reservations_commitments get_quota_consumption_trends get_virtualmachines get_containerApps get_appserviceplans get_storage_accounts get_keyvaults check_app_secrets_expiry get_postgresql get_sql get_eventhubnamespaces get_loganalyticsworkspace
+    python managedServiceWrapper.py -c CUST --skip get_subscriptions get_daily_costs get_reservations_commitments get_quota_consumption_trends get_virtualmachines get_containerApps get_appserviceplans get_storage_accounts get_keyvaults get_app_secrets_expiry get_postgresql get_sql get_eventhubnamespaces get_loganalyticsworkspace
     python managedServiceWrapper.py -c CUST --skip-login
     python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-client-secret <secret>
     python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-certificate /path/to/cert.pem
@@ -54,6 +54,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -198,7 +199,8 @@ def filter_active_azure_entries(customer_data: dict) -> tuple[dict, int, int]:
 
 def write_filtered_customer_json(filtered_data: dict, out_dir: Path, customer: str) -> Path:
     """Write filtered customer JSON used by downstream extractors."""
-    filtered_path = out_dir / f"{customer}_active.json"
+    # Keep filename stem stable so child extractors preserve expected output names.
+    filtered_path = out_dir / f"{customer}.json"
     with open(filtered_path, "w", encoding="utf-8") as handle:
         json.dump(filtered_data, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
@@ -269,25 +271,39 @@ def _child_env() -> dict[str, str]:
     return env
 
 
+def _stream_pipe(pipe, writer, color: str | None = None) -> None:
+    """Forward lines from *pipe* to *writer* in real time (used in a thread)."""
+    try:
+        for line in iter(pipe.readline, ""):
+            writer.write(_colorize(line, color) if color else line)
+            writer.flush()
+    finally:
+        pipe.close()
+
+
 def run_script(script_path: Path, script_args: list[str], label: str) -> bool:
-    """Run *script_path* as a subprocess; return True on exit code 0."""
+    """Run *script_path* as a subprocess, streaming output in real time; return True on exit code 0."""
     cmd = [sys.executable, str(script_path)] + script_args
     _banner(f"Running: {label}", char="─")
     print(f"  $ {' '.join(cmd)}\n")
-    result = subprocess.run(
+    proc = subprocess.Popen(
         cmd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
         env=_child_env(),
     )
-    if result.stdout:
-        sys.stdout.write(result.stdout)
-    if result.stderr:
-        sys.stderr.write(_colorize(result.stderr, RED))
-    if result.returncode != 0:
-        _print_error(f"\n  ✗  {label} exited with code {result.returncode}")
+    t_out = threading.Thread(target=_stream_pipe, args=(proc.stdout, sys.stdout))
+    t_err = threading.Thread(target=_stream_pipe, args=(proc.stderr, sys.stderr, RED))
+    t_out.start()
+    t_err.start()
+    t_out.join()
+    t_err.join()
+    returncode = proc.wait()
+    if returncode != 0:
+        _print_error(f"\n  ✗  {label} exited with code {returncode}")
         return False
     _print_success(f"\n  ✓  {label} completed successfully")
     return True
@@ -308,20 +324,24 @@ def run_subscriptions_script(
         print(f"  Tenant: {tenant_id}")
         cmd = [sys.executable, str(script_path)] + tenant_args
         print(f"  $ {' '.join(cmd)}\n")
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
             env=_child_env(),
         )
-        if result.stdout:
-            sys.stdout.write(result.stdout)
-        if result.stderr:
-            sys.stderr.write(_colorize(result.stderr, RED))
-        if result.returncode != 0:
-            _print_error(f"\n  ✗  {label} failed for tenant {tenant_id} with code {result.returncode}")
+        t_out = threading.Thread(target=_stream_pipe, args=(proc.stdout, sys.stdout))
+        t_err = threading.Thread(target=_stream_pipe, args=(proc.stderr, sys.stderr, RED))
+        t_out.start()
+        t_err.start()
+        t_out.join()
+        t_err.join()
+        returncode = proc.wait()
+        if returncode != 0:
+            _print_error(f"\n  ✗  {label} failed for tenant {tenant_id} with code {returncode}")
             success = False
             break
 
@@ -771,8 +791,8 @@ examples:
              "Choices: get_subscriptions  get_daily_costs  get_reservations_commitments  "
                "get_quota_consumption_trends  "
                "get_virtualmachines  get_containerApps  get_appserviceplans  get_storage_accounts  "
-               "get_keyvaults  check_app_secrets_expiry  get_postgresql  get_sql  get_eventhubnamespaces  "
-               "get_loganalyticsworkspace",
+               "get_keyvaults  get_app_secrets_expiry  get_postgresql  get_sql  get_eventhubnamespaces  "
+                             "get_loganalyticsworkspace",
     )
     parser.add_argument(
         "--only",
@@ -897,7 +917,7 @@ def main() -> None:
         ("get_appserviceplans",    "App Service Plans",     lookback_args if lookback_args else date_args),
         ("get_storage_accounts",   "Storage Accounts",      []),
         ("get_keyvaults",          "Key Vaults",            []),
-        ("check_app_secrets_expiry","App Secret Expiry",     []),
+        ("get_app_secrets_expiry", "Entra ID App Registrations", []),
         ("get_postgresql",         "PostgreSQL",            lookback_args if lookback_args else date_args),
         ("get_sql",                "Azure SQL",             lookback_args if lookback_args else date_args),
         ("get_eventhubnamespaces", "Event Hub Namespaces",  lookback_args if lookback_args else date_args),
@@ -905,8 +925,19 @@ def main() -> None:
     ]
 
     # ── Apply --only / --skip filters ─────────────────────────────────────────
-    only_set  = {s.lower().replace(".py", "") for s in args.only}
-    skip_set  = {s.lower().replace(".py", "") for s in args.skip}
+    # Backward compatibility: accept legacy script stem aliases in --only/--skip.
+    script_aliases = {
+        "check_app_secrets_expiry": "get_app_secrets_expiry",
+    }
+
+    only_set = {
+        script_aliases.get(s.lower().replace(".py", ""), s.lower().replace(".py", ""))
+        for s in args.only
+    }
+    skip_set = {
+        script_aliases.get(s.lower().replace(".py", ""), s.lower().replace(".py", ""))
+        for s in args.skip
+    }
 
     selected_scripts = []
     for stem, label, extra in script_registry:
@@ -948,7 +979,11 @@ def main() -> None:
             continue
 
         if stem == "get_subscriptions":
-            subscriptions_args = ["--output-dir", str(out_dir), "--output-format", args.output_format]
+            subscriptions_args = [
+                "--output-dir", str(out_dir),
+                "--output-format", args.output_format,
+                "--input", str(customer_json_path),
+            ]
             if args.sp_client_id:
                 subscriptions_args += ["--sp-client-id", args.sp_client_id]
                 if args.sp_certificate:
