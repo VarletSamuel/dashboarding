@@ -59,7 +59,7 @@
 .customer-badge-content {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
 }
 
 .customer-badge-label {
@@ -75,6 +75,7 @@
   font-weight: 700;
   color: var(--text, #f8fafc);
   line-height: 1.25;
+  display: none;
 }
 
 #activeCustomerMode {
@@ -86,6 +87,26 @@
   font-size: 0.76rem;
   font-weight: 600;
   letter-spacing: 0.01em;
+  display: none;
+}
+
+.customer-folder-selector {
+  width: 100%;
+  max-width: 340px;
+  display: none;
+}
+
+.customer-folder-selector select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent, #0ea5e9) 30%, transparent);
+  background:
+    radial-gradient(120% 120% at 0% 0%, color-mix(in srgb, var(--accent, #0ea5e9) 14%, transparent), transparent 58%),
+    color-mix(in srgb, var(--surface-2, #1d2430) 92%, white 8%);
+  color: var(--text, #f8fafc);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+  font-weight: 600;
 }
 
 @media (max-width: 700px) {
@@ -124,6 +145,11 @@
       <span class="customer-badge-icon" aria-hidden="true">🎯</span>
       <div class="customer-badge-content">
         <span class="customer-badge-label">Loaded customer data</span>
+        <div class="customer-folder-selector" id="folderSelectorGroup">
+          <select id="folderSelector" title="Select customer folder">
+            <option value="">-- Select customer folder --</option>
+          </select>
+        </div>
         <p id="activeCustomerName">No customer selected</p>
       </div>
       <span id="activeCustomerMode">No data source</span>
@@ -170,7 +196,7 @@
   <div class="storage-modal">
     <h3>Storage Account Configuration</h3>
     <div id="sourceModeHint" class="form-hint" style="margin-bottom:10px;">
-      Choose one data source: either a Storage connection or a Local folder.
+      Configure your storage connection. Select the customer folder on the main page.
     </div>
     
     <div id="connectionStatus" class="current-status" style="display: none;">
@@ -189,27 +215,6 @@
       <div class="form-hint">
         Paste your Azure Storage connection string or SAS URL. Saved locally in browser storage only.
       </div>
-    </div>
-
-    <div class="form-group" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border, #ddd);display:none;" id="folderSelectorGroup">
-      <label for="folderSelector">Select Customer Folder</label>
-      <div style="display:flex;gap:8px;align-items:center;">
-        <select id="folderSelector" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--border, #ccc);">
-          <option value="">Loading folders...</option>
-        </select>
-        <button class="btn-secondary" id="refreshFoldersBtn" type="button" title="Refresh folder list">🔄</button>
-      </div>
-      <div class="form-hint" id="folderSelectorStatus"></div>
-    </div>
-
-    <div class="form-group" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border, #ddd)">
-      <label>Local Folder (CSV + manifest)</label>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <button class="btn-secondary" id="loadLocalFolderBtn" type="button">Load Local Folder</button>
-        <button class="btn-secondary" id="clearLocalFolderBtn" type="button" style="display:none;">Clear Local Folder</button>
-      </div>
-      <input type="file" id="localFolderInput" webkitdirectory directory multiple style="display:none" />
-      <div class="form-hint" id="localFolderStatus">No local folder selected.</div>
     </div>
 
     <div class="storage-modal-buttons">
@@ -464,9 +469,9 @@ const DASHBOARDS = [
   // ── Misc ──
   {
     section: 'Misc',
-    title: 'Entra ID App Registrations',
-    description: 'Track application credentials across tenants, including expired and soon-to-expire client secrets and certificates with app-level visibility.',
-    url: 'dashboards/entraIdAppRegistrations.html',
+    title: 'Entra ID',
+    description: 'AppRegistration overview for get_app_secrets_expiry output, including status distribution and expiry horizon.',
+    url: 'dashboards/entraid.html',
     dashboardId: 'appSecretExpirations',
     icon: '🪪',
     iconBg: 'rgba(20, 184, 166, 0.14)',
@@ -547,12 +552,6 @@ function toggleSection(headerEl) {
 
 function injectConnectionToLink(e, anchor) {
   e.preventDefault();
-  const localDatasetId = localStorage.getItem(LOCAL_DATASET_ID_KEY) || '';
-  const localActive = localStorage.getItem(LOCAL_DATASET_ACTIVE_KEY) === 'true' && !!localDatasetId;
-  if (localActive) {
-    window.location.href = anchor.href.split('#')[0] + '#local=' + encodeURIComponent(localDatasetId);
-    return;
-  }
   const conn = localStorage.getItem(STORAGE_CONFIG_KEY);
   const folder = localStorage.getItem(STORAGE_FOLDER_KEY) || '';
   const base = anchor.href.split('#')[0];
@@ -684,21 +683,7 @@ function initStorageConfig() {
   const input = document.getElementById('connectionStringInput');
   const folderGroup = document.getElementById('folderSelectorGroup');
   const folderSelector = document.getElementById('folderSelector');
-  const folderStatus = document.getElementById('folderSelectorStatus');
-  const refreshFoldersBtn = document.getElementById('refreshFoldersBtn');
   const sourceModeHint = document.getElementById('sourceModeHint');
-  const loadLocalFolderBtn = document.getElementById('loadLocalFolderBtn');
-  const clearLocalFolderBtn = document.getElementById('clearLocalFolderBtn');
-  const localFolderInput = document.getElementById('localFolderInput');
-  const localFolderStatus = document.getElementById('localFolderStatus');
-
-  function getLocalDatasetId() {
-    return localStorage.getItem(LOCAL_DATASET_ID_KEY) || '';
-  }
-
-  function hasLocalDataset() {
-    return localStorage.getItem(LOCAL_DATASET_ACTIVE_KEY) === 'true' && !!getLocalDatasetId();
-  }
 
   function getSelectedFolder() {
     return localStorage.getItem(STORAGE_FOLDER_KEY) || '';
@@ -720,7 +705,6 @@ function initStorageConfig() {
 
     folderGroup.style.display = 'block';
     folderSelector.innerHTML = '<option value="">Loading folders...</option>';
-    folderStatus.textContent = 'Fetching available folders...';
 
     try {
       const client = new AzureStorageClient(connStr);
@@ -736,44 +720,17 @@ function initStorageConfig() {
         folderSelector.appendChild(opt);
       });
 
-      if (folders.length === 0) {
-        folderStatus.textContent = 'No folders found in reports container.';
-      } else {
-        folderStatus.textContent = `Found ${folders.length} folder(s)`;
+      if (folders.length > 0) {
         if (savedFolder && folders.includes(savedFolder)) {
           folderSelector.value = savedFolder;
-          folderStatus.textContent = `Found ${folders.length} folder(s). Current selection: ${savedFolder}`;
         }
         if (folders.length === 1) {
           folderSelector.value = folders[0];
-          folderStatus.textContent = `Found ${folders.length} folder (auto-selected): ${folders[0]}`;
         }
       }
     } catch (err) {
       folderSelector.innerHTML = '<option value="">Error loading folders</option>';
-      folderStatus.textContent = `Error: ${err.message}`;
       console.error('Failed to load folders:', err);
-    }
-  }
-
-  async function syncLocalFolderUi() {
-    const datasetId = getLocalDatasetId();
-    const dataset = datasetId ? await readLocalDataset(datasetId).catch(() => null) : null;
-    const hasLocal = !!(dataset && Array.isArray(dataset.files) && dataset.files.length);
-
-    clearLocalFolderBtn.style.display = hasLocal ? 'block' : 'none';
-    if (!hasLocal) {
-      localFolderStatus.textContent = 'No local folder selected.';
-      return;
-    }
-
-    const manifest = findManifestInDataset(dataset);
-    const folderLabel = String(dataset.label || datasetId);
-    const customerLabel = resolveManifestCustomerLabel(manifest);
-    if (customerLabel) {
-      localFolderStatus.textContent = `Loaded local folder: ${folderLabel} (${dataset.files.length} file(s), customer ${customerLabel})`;
-    } else {
-      localFolderStatus.textContent = `Loaded local folder: ${folderLabel} (${dataset.files.length} file(s), no manifest found)`;
     }
   }
 
@@ -783,26 +740,19 @@ function initStorageConfig() {
 
   async function syncConnectionUi() {
     const hasSaved = !!getSavedConnection();
-    const hasLocal = hasLocalDataset();
-    updateConnectionStatus(hasSaved || hasLocal);
+    updateConnectionStatus(hasSaved);
     clearBtn.style.display = hasSaved ? 'block' : 'none';
 
-    // Visual source mode clarity: local source and storage source are mutually exclusive.
-    input.disabled = hasLocal;
-    folderSelector.disabled = hasLocal;
-    refreshFoldersBtn.disabled = hasLocal;
-    if (hasLocal) {
-      folderGroup.style.display = 'none';
-      sourceModeHint.textContent = 'Using Local folder data source. Storage connection is disabled until local source is cleared.';
-    } else if (hasSaved) {
+    if (hasSaved) {
       sourceModeHint.textContent = 'Using Storage connection data source.';
+      await loadFoldersFromConnection(getSavedConnection());
     } else {
-      sourceModeHint.textContent = 'Choose one data source: either a Storage connection or a Local folder.';
+      sourceModeHint.textContent = 'Configure your storage connection. Select the customer folder on the main page.';
+      folderGroup.style.display = 'none';
     }
 
-    await syncLocalFolderUi();
     await refreshActiveCustomerNotation();
-    if (hasSaved || hasLocal) checkManifestStatus();
+    if (hasSaved) checkManifestStatus();
   }
 
   // Load saved connection on init
@@ -811,31 +761,21 @@ function initStorageConfig() {
   // Open modal
   storageBtn.addEventListener('click', () => {
     modal.classList.add('open');
-    // Always read current saved value (may have changed since page load)
     input.value = getSavedConnection();
-    if (input.value.trim() && !hasLocalDataset()) {
-      loadFoldersFromConnection(input.value.trim());
-    }
     input.focus();
   });
 
-  // Load folders when connection string changes
-  input.addEventListener('input', async () => {
-    const connStr = input.value.trim();
-    await loadFoldersFromConnection(connStr);
-  });
-
-  // Refresh folders button
-  refreshFoldersBtn.addEventListener('click', async () => {
-    const connStr = input.value.trim();
-    await loadFoldersFromConnection(connStr);
+  folderSelector.addEventListener('change', async () => {
+    const selectedFolder = folderSelector.value;
+    setSelectedFolder(selectedFolder);
+    await refreshActiveCustomerNotation();
+    await checkManifestStatus();
   });
 
   // Close modal
   closeBtn.addEventListener('click', () => {
     modal.classList.remove('open');
     input.value = '';
-    folderGroup.style.display = 'none';
   });
 
   // Close modal on overlay click (outside the dialog)
@@ -843,34 +783,15 @@ function initStorageConfig() {
     if (e.target === modal) {
       modal.classList.remove('open');
       input.value = '';
-      folderGroup.style.display = 'none';
     }
   });
 
   // Save connection
   saveBtn.addEventListener('click', () => {
     const connectionString = input.value.trim();
-    const selectedFolder = folderSelector.value;
-    const localReady = hasLocalDataset();
-    
-    if (!connectionString) {
-      if (localReady) {
-        localStorage.removeItem(STORAGE_CONFIG_KEY);
-        localStorage.removeItem(STORAGE_FOLDER_KEY);
-        localStorage.setItem(LOCAL_DATASET_ACTIVE_KEY, 'true');
-        syncConnectionUi();
-        checkManifestStatus();
-        modal.classList.remove('open');
-        input.value = '';
-        console.log('✓ Local folder data source saved');
-        return;
-      }
-      alert('Please enter a connection string or load a local folder');
-      return;
-    }
 
-    if (!selectedFolder) {
-      alert('Please select a customer folder from the dropdown');
+    if (!connectionString) {
+      alert('Please enter a connection string');
       return;
     }
 
@@ -888,16 +809,12 @@ function initStorageConfig() {
 
     // Save to localStorage
     localStorage.setItem(STORAGE_CONFIG_KEY, connectionString);
-    localStorage.setItem(LOCAL_DATASET_ACTIVE_KEY, 'false');
-    localStorage.removeItem(LOCAL_DATASET_ID_KEY);
-    setSelectedFolder(selectedFolder);
     syncConnectionUi();
     checkManifestStatus();
     modal.classList.remove('open');
     input.value = '';
-    folderGroup.style.display = 'none';
-    
-    console.log(`✓ Storage account connection saved (folder: ${selectedFolder})`);
+
+    console.log('✓ Storage account connection saved');
   });
 
   // Clear connection
@@ -907,64 +824,6 @@ function initStorageConfig() {
       localStorage.removeItem(STORAGE_FOLDER_KEY);
       syncConnectionUi();
       input.value = '';
-      folderGroup.style.display = 'none';
-    }
-  });
-
-  loadLocalFolderBtn.addEventListener('click', () => {
-    localFolderInput.click();
-  });
-
-  localFolderInput.addEventListener('change', async (e) => {
-    const files = [...(e.target.files || [])];
-    if (!files.length) return;
-
-    try {
-      const usable = files.filter(f => /\.(csv|json|txt)$/i.test(f.name));
-      if (!usable.length) {
-        alert('No CSV/JSON/TXT files found in selected folder.');
-        return;
-      }
-
-      const fileEntries = await Promise.all(usable.map(async (f) => ({
-        name: f.webkitRelativePath || f.name,
-        content: await f.text(),
-        size: f.size,
-        lastModified: f.lastModified,
-      })));
-
-      const datasetId = `local-${Date.now()}`;
-      const rootLabel = (usable[0].webkitRelativePath || '').split('/')[0] || 'local-folder';
-      await saveLocalDataset({
-        id: datasetId,
-        label: rootLabel,
-        createdAt: new Date().toISOString(),
-        files: fileEntries,
-      });
-
-      localStorage.setItem(LOCAL_DATASET_ID_KEY, datasetId);
-      localStorage.setItem(LOCAL_DATASET_ACTIVE_KEY, 'true');
-      // Local folder mode is exclusive: clear any storage source settings.
-      localStorage.removeItem(STORAGE_CONFIG_KEY);
-      localStorage.removeItem(STORAGE_FOLDER_KEY);
-      input.value = '';
-      folderGroup.style.display = 'none';
-      syncConnectionUi();
-      checkManifestStatus();
-      console.log(`✓ Local folder loaded (${fileEntries.length} file(s))`);
-    } catch (err) {
-      alert('Failed to load local folder: ' + (err.message || err));
-    } finally {
-      localFolderInput.value = '';
-    }
-  });
-
-  clearLocalFolderBtn.addEventListener('click', () => {
-    if (confirm('Remove active local folder data source?')) {
-      localStorage.removeItem(LOCAL_DATASET_ID_KEY);
-      localStorage.removeItem(LOCAL_DATASET_ACTIVE_KEY);
-      syncConnectionUi();
-      checkManifestStatus();
     }
   });
 
@@ -976,7 +835,6 @@ function initStorageConfig() {
     if (e.key === 'Escape') {
       modal.classList.remove('open');
       input.value = '';
-      folderGroup.style.display = 'none';
     }
   });
 }
@@ -986,40 +844,6 @@ async function checkManifestStatus() {
   document.querySelectorAll('.portal-card[data-dashboard-id]').forEach(card => {
     card.classList.remove('portal-card--pending');
   });
-
-  const localActive = localStorage.getItem(LOCAL_DATASET_ACTIVE_KEY) === 'true';
-  const localDatasetId = localStorage.getItem(LOCAL_DATASET_ID_KEY);
-  if (localActive && localDatasetId) {
-    try {
-      const dataset = await readLocalDataset(localDatasetId);
-      if (!dataset || !Array.isArray(dataset.files)) return;
-
-      const manifest = findManifestInDataset(dataset);
-      let availableIds;
-      if (manifest && Array.isArray(manifest.dashboards)) {
-        availableIds = new Set(manifest.dashboards.map(d => d.id));
-      } else {
-        availableIds = getAvailableDashboardIdsFromFileNames(dataset.files);
-        availableIds.delete('__manifest__');
-      }
-
-      document.querySelectorAll('.portal-card[data-dashboard-id]').forEach(card => {
-        const id = card.dataset.dashboardId;
-        const candidateIds = getManifestDashboardIdsForPortalCard(id);
-        const qualityChecksRelaxed =
-          id === 'quality_checks' &&
-          (
-            (manifest && manifestHasAnyNonCostDashboard(manifest)) ||
-            [...availableIds].some(candidate => candidate !== 'azureCosts' && candidate !== '__manifest__')
-          );
-        const isAvailable = qualityChecksRelaxed || candidateIds.some(candidate => availableIds.has(candidate));
-        card.classList.toggle('portal-card--pending', !isAvailable);
-      });
-      return;
-    } catch (err) {
-      console.warn('[portal] Could not check local dataset status:', err.message);
-    }
-  }
 
   const conn = localStorage.getItem(STORAGE_CONFIG_KEY);
   const selectedFolder = localStorage.getItem(STORAGE_FOLDER_KEY);
@@ -1096,25 +920,8 @@ function resolveManifestCustomerLabel(manifest) {
 }
 
 async function refreshActiveCustomerNotation() {
-  const localActive = localStorage.getItem(LOCAL_DATASET_ACTIVE_KEY) === 'true';
-  const localDatasetId = localStorage.getItem(LOCAL_DATASET_ID_KEY);
   const conn = localStorage.getItem(STORAGE_CONFIG_KEY);
   const selectedFolder = localStorage.getItem(STORAGE_FOLDER_KEY) || '';
-
-  if (localActive && localDatasetId) {
-    try {
-      const dataset = await readLocalDataset(localDatasetId);
-      const manifest = findManifestInDataset(dataset);
-      const customerFromManifest = resolveManifestCustomerLabel(manifest);
-      const label = String(dataset?.label || '').trim();
-      const customerName = customerFromManifest || label || 'Local dataset loaded';
-      setActiveCustomerNotation(customerName, 'Local folder source', 'single');
-      return;
-    } catch {
-      setActiveCustomerNotation('Local dataset loaded', 'Local folder source', 'single');
-      return;
-    }
-  }
 
   if (conn && selectedFolder) {
     try {

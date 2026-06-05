@@ -534,6 +534,9 @@ function aggregate(records){
   const daily_sub={};
   for(const[sub,dateMap]of Object.entries(dailySubMap)){daily_sub[sub]=dates.map(d=>({d,c:Math.round((dateMap[d]||0)*100)/100}))}
   const by_type=Object.entries(typeMap).map(([rt,v])=>({rt,c:Math.round(v.c*100)/100,cu:Math.round(v.cu*100)/100})).sort((a,b)=>b.c-a.c);
+  const allTypes=by_type.map(x=>x.rt);
+  const type_mom_all={};
+  for(const rt of allTypes){type_mom_all[rt]=monthLabels.map((ml,i)=>({m:ml,c:Math.round((typeMonthMap[months[i]]?.[rt]||0)*100)/100}))}
   const topTypes=by_type.slice(0,15).map(x=>x.rt);
   const type_mom={};
   for(const rt of topTypes){type_mom[rt]=monthLabels.map((ml,i)=>({m:ml,c:Math.round((typeMonthMap[months[i]]?.[rt]||0)*100)/100}))}
@@ -552,7 +555,7 @@ function aggregate(records){
     }));
   }
   
-  return{currency,grand_total:Math.round(grandTotal*100)/100,grand_total_usd:Math.round(grandTotalUsd*100)/100,months:monthLabels,daily,daily_sub,by_type,type_mom,top_resources,subs,sub_mom,sub_rg:sub_rg_list,sub_rg_mom,rgMap,rgMonthMap,date_from:dates[0],date_to:dates[dates.length-1]};
+  return{currency,grand_total:Math.round(grandTotal*100)/100,grand_total_usd:Math.round(grandTotalUsd*100)/100,months:monthLabels,daily,daily_sub,by_type,type_mom,type_mom_all,top_resources,subs,sub_mom,sub_rg:sub_rg_list,sub_rg_mom,rgMap,rgMonthMap,date_from:dates[0],date_to:dates[dates.length-1]};
 }
 
 // ===========================================================================
@@ -860,6 +863,43 @@ document.getElementById('themeToggleUpload').addEventListener('click',toggleThem
     worksheet.getColumn(1).width = 30;
     for (let ci = 2; ci <= detailHeader.length; ci++) {
       worksheet.getColumn(ci).width = 14;
+    }
+
+    // Sheet 3: Overview (resource type totals by month)
+    const typeHeader = ['Resource Type', ...months, 'Total'];
+    const typeRows = DATA.by_type.map(t => {
+      const typeByMonth = {};
+      (DATA.type_mom_all?.[t.rt] || DATA.type_mom?.[t.rt] || []).forEach(e => { typeByMonth[e.m] = e.c; });
+      const typeValues = months.map(m => typeByMonth[m] || 0);
+      const typeTotal = Math.round(typeValues.reduce((a, b) => a + b, 0) * 100) / 100;
+      return [t.rt, ...typeValues, typeTotal];
+    });
+
+    const typeWs = workbook.addWorksheet('Overview by Resource Type');
+    typeWs.addTable({
+      name: 'OverviewByResourceType',
+      ref: 'A1',
+      headerRow: true,
+      totalsRow: true,
+      style: {
+        theme: 'TableStyleLight8',
+        showFirstColumn: false,
+        showLastColumn: false,
+        showRowStripes: true,
+        showColumnStripes: false,
+      },
+      columns: typeHeader.map((h, i) => ({
+        name: h,
+        filterButton: true,
+        totalsRowFunction: i === 0 ? 'none' : 'sum',
+        totalsRowLabel: i === 0 ? 'TOTAL' : undefined,
+      })),
+      rows: typeRows,
+    });
+    typeWs.getColumn(1).width = 42;
+    for (let ci = 2; ci <= typeHeader.length; ci++) {
+      typeWs.getColumn(ci).width = 14;
+      typeWs.getColumn(ci).numFmt = '#,##0.00';
     }
 
     // Download
