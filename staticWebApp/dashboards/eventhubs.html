@@ -58,7 +58,6 @@
       <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode">
         <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
       </button>
-      <button class="topbar-btn" id="reloadBtn">↩ Load another CSV</button>
       <a class="topbar-btn" href="../index.html">← Back to portal</a>
     </div>
   </div>
@@ -1161,24 +1160,6 @@ fileInput.addEventListener('change', e => {
     return true;
   });
   if (files.length) handleFiles(files);
-  fileInput.value = '';
-});
-
-document.getElementById('reloadBtn').addEventListener('click', () => {
-  document.getElementById('dashboardScreen').style.display = 'none';
-  document.getElementById('uploadScreen').style.display = 'flex';
-  destroyCharts();
-  SUMMARY_ROWS = []; TS_ROWS = []; AGG = null; FILTER_OPTIONS = {};
-  LOADED_FILES = { summary: null, timeseries: null };
-  uploadZone.style.borderColor = '';
-  const hint = uploadZone.querySelector('.hint');
-  if (hint) hint.textContent = 'summary · timeseries · or both at once';
-  const uploadStatus = document.getElementById('upload-status');
-  if (uploadStatus) {
-    uploadStatus.textContent = '';
-    uploadStatus.style.display = 'none';
-    uploadStatus.style.margin = '0';
-  }
   fileInput.value = '';
 });
 

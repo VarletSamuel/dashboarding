@@ -63,7 +63,6 @@
       <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode">
         <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
       </button>
-      <button class="topbar-btn" id="reloadBtn">↩ Load another file</button>
       <a class="topbar-btn" href="../index.html">← Back to portal</a>
     </div>
   </div>
@@ -351,23 +350,6 @@ function updateFileStatus() {
 }
 
 buildBtn.addEventListener('click', () => showDashboard('DevOps'));
-
-document.getElementById('reloadBtn').addEventListener('click', () => {
-  document.getElementById('dashboardScreen').style.display = 'none';
-  document.getElementById('uploadScreen').style.display = 'flex';
-  HEALTH_ALL = []; USAGE_ALL = []; BRANCHES_ALL = []; LICENSES_ALL = [];
-  ACTIVE_PROJECTS = new Set();
-  document.getElementById('dropZoneMain').classList.remove('loaded');
-  const fileStatusList = document.getElementById('fileStatusList');
-  fileStatusList.innerHTML = '';
-  fileStatusList.style.display = 'none';
-  buildBtn.style.display = 'none';
-  errorMsg.textContent = '';
-  errorMsg.style.display = 'none';
-  loadingMsg.style.display = 'none';
-  [_chartHealth, _chartUsage, _chartBranches, _chartLicenses].forEach(c => { if (c) c.destroy(); });
-  _chartHealth = _chartUsage = _chartBranches = _chartLicenses = null;
-});
 
 // ════════════════════════════════════════════════════════════
 // SHOW DASHBOARD

@@ -83,7 +83,6 @@
           <button id="exportExcel">📊 &nbsp;Export to Excel (.xlsx)</button>
         </div>
       </div>
-      <button class="topbar-btn" id="reloadBtn">↩ Load another CSV</button>
       <a class="topbar-btn" href="../index.html">← Back to portal</a>
     </div>
   </div>
@@ -578,14 +577,6 @@ fileInput.addEventListener('change', () => {
   });
   if (files.length) handleFiles(files);
   fileInput.value = '';
-});
-document.getElementById('reloadBtn').addEventListener('click',()=>{
-  document.getElementById('dashboardScreen').style.display='none';
-  document.getElementById('uploadScreen').style.display='flex';
-  destroyCharts();ALL_RECORDS=[];DATA=null;FILTER_OPTIONS={};ACTIVE_FILTERS={};
-  fileInput.value='';errorMsg.textContent='';
-  errorMsg.style.display='none';
-  loadingMsg.style.display='none';
 });
 
 function handleFiles(fileList){

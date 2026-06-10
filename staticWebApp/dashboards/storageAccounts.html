@@ -46,7 +46,6 @@
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">
       <span class="meta" id="dashMeta"></span>
       <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
-      <button class="topbar-btn" id="reloadBtn">↩ Load another CSV</button>
       <a class="topbar-btn" href="../index.html">← Back to portal</a>
     </div>
   </div>
@@ -522,17 +521,6 @@ fileInput.addEventListener('change', event => {
   const file = event.target.files?.[0];
   if (file) handleFile(file);
   fileInput.value = '';
-});
-
-document.getElementById('reloadBtn').addEventListener('click', () => {
-  destroyCharts();
-  ALL_ROWS = [];
-  FILTER_OPTIONS = {};
-  ACTIVE_FILTERS = {};
-  LOADED_FILE = '';
-  updateUploadStatus();
-  document.getElementById('dashboardScreen').style.display = 'none';
-  document.getElementById('uploadScreen').style.display = 'flex';
 });
 
 function parseFileSortKey(name) {

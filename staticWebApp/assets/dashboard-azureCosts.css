@@ -189,7 +189,7 @@
   position: absolute;
   top: calc(100% + 4px);
   right: 0;
-  min-width: 180px;
+  min-width: 220px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -209,6 +209,7 @@
   text-align: left;
   font: inherit;
   font-size: 13px;
+  white-space: nowrap;
   color: var(--text);
   cursor: pointer;
   transition: background 0.12s;

@@ -101,7 +101,6 @@ th.col-resizable-header {
         <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
       </button>
       <button class="topbar-btn" id="resetColumnWidthsBtn">↔ Reset column widths</button>
-      <button class="topbar-btn" id="reloadBtn">↩ Load another file</button>
       <a class="topbar-btn" href="../index.html">← Back to portal</a>
     </div>
   </div>
@@ -782,27 +781,6 @@ function updateFileStatus() {
 }
 
 buildBtn.addEventListener('click', () => showDashboard('QC Report'));
-
-document.getElementById('reloadBtn').addEventListener('click', () => {
-  document.getElementById('dashboardScreen').style.display = 'none';
-  document.getElementById('uploadScreen').style.display = 'flex';
-  KV_ALL = []; ST_ALL = []; ASP_ALL = []; VM_ALL = []; SQLSRV_ALL = []; SQLDB_ALL = []; SUBS_ALL = []; ACTIVE_SUBS = new Set(); ACTIVE_SUB_STATUSES = new Set();
-  AZ_ENV_SORT_STATE = { key: 'subscription_name', dir: 'asc' };
-  document.getElementById('dropZoneMain').classList.remove('loaded');
-  const fileStatusList = document.getElementById('fileStatusList');
-  fileStatusList.innerHTML = '';
-  fileStatusList.style.display = 'none';
-  buildBtn.style.display = 'none';
-  errorMsg.textContent = '';
-  errorMsg.style.display = 'none';
-  loadingMsg.style.display = 'none';
-  if (_chartKV)     { _chartKV.destroy();     _chartKV     = null; }
-  if (_chartST)     { _chartST.destroy();     _chartST     = null; }
-  if (_chartASP)    { _chartASP.destroy();    _chartASP    = null; }
-  if (_chartVM)     { _chartVM.destroy();     _chartVM     = null; }
-  if (_chartSQLSRV) { _chartSQLSRV.destroy(); _chartSQLSRV = null; }
-  if (_chartSQLDB)  { _chartSQLDB.destroy();  _chartSQLDB  = null; }
-});
 
 // ════════════════════════════════════════════════════════════
 // SHOW DASHBOARD

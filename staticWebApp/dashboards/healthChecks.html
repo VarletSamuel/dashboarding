@@ -63,7 +63,6 @@
       <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode">
         <span class="icon-sun">☀️</span><span class="icon-moon">🌙</span>
       </button>
-      <button class="topbar-btn" id="reloadBtn">↩ Load another file</button>
       <a class="topbar-btn" href="../index.html">← Back to portal</a>
     </div>
   </div>
@@ -354,22 +353,6 @@ function updateFileStatus() {
 }
 
 buildBtn.addEventListener('click', () => showDashboard('Health Check'));
-
-document.getElementById('reloadBtn').addEventListener('click', () => {
-  document.getElementById('dashboardScreen').style.display = 'none';
-  document.getElementById('uploadScreen').style.display = 'flex';
-  ADV_ALL = []; MON_ALL = []; POL_ALL = []; ACTIVE_SUBS = new Set();
-  document.getElementById('dropZoneMain').classList.remove('loaded');
-  const fileStatusList = document.getElementById('fileStatusList');
-  fileStatusList.innerHTML = '';
-  fileStatusList.style.display = 'none';
-  buildBtn.style.display = 'none';
-  errorMsg.textContent = '';
-  errorMsg.style.display = 'none';
-  loadingMsg.style.display = 'none';
-  [_chartAdv, _chartMon, _chartPol].forEach(c => { if (c) c.destroy(); });
-  _chartAdv = _chartMon = _chartPol = null;
-});
 
 // ════════════════════════════════════════════════════════════
 // SHOW DASHBOARD

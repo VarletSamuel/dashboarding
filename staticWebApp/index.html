@@ -60,6 +60,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  align-items: flex-start;
 }
 
 .customer-badge-label {
@@ -91,14 +92,16 @@
 }
 
 .customer-folder-selector {
-  width: 100%;
-  max-width: 340px;
   display: none;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .customer-folder-selector select {
-  width: 100%;
-  padding: 10px 12px;
+  width: 120px;
+  flex-shrink: 0;
+  padding: 7px 10px;
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--accent, #0ea5e9) 30%, transparent);
   background:
@@ -107,6 +110,32 @@
   color: var(--text, #f8fafc);
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
   font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+#folderCustomerName {
+  font-size: 0.93rem;
+  font-weight: 600;
+  color: var(--text, #f8fafc);
+  opacity: 0.88;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+  display: none;
+}
+
+#folderGeneratedAt {
+  font-size: 0.93rem;
+  font-weight: 600;
+  color: var(--text, #f8fafc);
+  opacity: 0.88;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+  display: none;
 }
 
 @media (max-width: 700px) {
@@ -147,8 +176,12 @@
         <span class="customer-badge-label">Loaded customer data</span>
         <div class="customer-folder-selector" id="folderSelectorGroup">
           <select id="folderSelector" title="Select customer folder">
-            <option value="">-- Select customer folder --</option>
+            <option value="">-- Select folder --</option>
           </select>
+          <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
+            <span id="folderCustomerName" title="Customer name from manifest"></span>
+            <span id="folderGeneratedAt"></span>
+          </div>
         </div>
         <p id="activeCustomerName">No customer selected</p>
       </div>
@@ -458,6 +491,16 @@ const DASHBOARDS = [
   },
   {
     section: 'Resource specific (Data)',
+    title: 'Log Analytics Workspaces',
+    description: 'Workspace inventory with daily quota, retention posture, ingestion trends, and configuration checks from Log Analytics exports.',
+    url: 'dashboards/loganalyticsworkspace.html',
+    dashboardId: 'logAnalyticsWorkspaces',
+    icon: '📊',
+    iconBg: 'rgba(34, 197, 94, 0.12)',
+    status: 'active',
+  },
+  {
+    section: 'Resource specific (Data)',
     title: 'Cosmos DB',
     description: 'Analyze Cosmos DB throughput allocation across SQL, MongoDB, Gremlin, Cassandra and Table APIs; identify effective RU totals and reservation candidates.',
     url: 'dashboards/cosmos.html',
@@ -626,6 +669,7 @@ function getAvailableDashboardIdsFromFileNames(files) {
     if (name.includes('_container_apps_')) ids.add('containerApps');
     if (name.includes('_daily_costs_')) ids.add('azureCosts');
     if (name.includes('_eventhub_')) ids.add('eventhubs');
+    if (name.includes('_loganalyticsworkspace_')) ids.add('logAnalyticsWorkspaces');
     if (name.includes('_postgresql_')) ids.add('postgresql');
     if (name.includes('_virtual_machines_')) ids.add('virtualMachines');
     if (name.includes('_storage_accounts_')) ids.add('storageAccounts');
@@ -700,11 +744,13 @@ function initStorageConfig() {
   async function loadFoldersFromConnection(connStr) {
     if (!connStr || connStr.length < 10) {
       folderGroup.style.display = 'none';
+      setFolderCustomerName('');
       return;
     }
 
-    folderGroup.style.display = 'block';
+    folderGroup.style.display = 'flex';
     folderSelector.innerHTML = '<option value="">Loading folders...</option>';
+    setFolderCustomerName('');
 
     try {
       const client = new AzureStorageClient(connStr);
@@ -712,7 +758,7 @@ function initStorageConfig() {
       const folders = await client.listFolders(targetContainer);
       const savedFolder = getSelectedFolder();
       
-      folderSelector.innerHTML = '<option value="">-- Select a folder --</option>';
+      folderSelector.innerHTML = '<option value="">-- Select --</option>';
       folders.forEach(folder => {
         const opt = document.createElement('option');
         opt.value = folder;
@@ -889,6 +935,35 @@ async function checkManifestStatus() {
   }
 }
 
+function setFolderCustomerName(name) {
+  const el = document.getElementById('folderCustomerName');
+  if (!el) return;
+  if (name) {
+    el.textContent = name;
+    el.style.display = 'inline';
+    el.title = name;
+  } else {
+    el.textContent = '';
+    el.style.display = 'none';
+  }
+}
+
+function setFolderGeneratedAt(isoString) {
+  const el = document.getElementById('folderGeneratedAt');
+  if (!el) return;
+  if (isoString) {
+    const date = new Date(isoString);
+    const label = isNaN(date.getTime())
+      ? isoString
+      : date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    el.textContent = 'Last generated: ' + label;
+    el.style.display = 'inline';
+  } else {
+    el.textContent = '';
+    el.style.display = 'none';
+  }
+}
+
 function setActiveCustomerNotation(name, mode, state) {
   const banner = document.getElementById('activeCustomerBanner');
   const nameEl = document.getElementById('activeCustomerName');
@@ -933,12 +1008,23 @@ async function refreshActiveCustomerNotation() {
         return firstPathSegment === selectedFolder || String(m?.manifest?.customer || '') === selectedFolder;
       });
       const fullName = resolveManifestCustomerLabel(matchingManifest?.manifest);
+      // Show the long name in the inline label only if it differs from the code
+      const customerName = matchingManifest?.manifest?.customer_name
+        ? String(matchingManifest.manifest.customer_name).trim()
+        : '';
+      setFolderCustomerName(customerName);
+      setFolderGeneratedAt(matchingManifest?.manifest?.generated_at || '');
       setActiveCustomerNotation(fullName || selectedFolder, 'Storage folder source', 'single');
     } catch {
+      setFolderCustomerName('');
+      setFolderGeneratedAt('');
       setActiveCustomerNotation(selectedFolder, 'Storage folder source', 'single');
     }
     return;
   }
+
+  setFolderCustomerName('');
+  setFolderGeneratedAt('');
 
   if (conn) {
     setActiveCustomerNotation('All customers (folder not selected)', 'Storage source', 'multi');

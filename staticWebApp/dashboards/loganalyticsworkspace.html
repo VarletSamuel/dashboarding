@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Log Analytics Workspaces Dashboard</title>
+<link rel="icon" type="image/png" href="../assets/delaware-dee-rgb.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/dashboard-core.css">
+<link rel="stylesheet" href="../assets/dashboard-storage-accounts.css">
+<script src="../assets/storage-loader.js"></script>
+<script src="../assets/filter-bar-helper.js"></script>
+<script>
+(function(){
+  const saved = localStorage.getItem('dco-theme');
+  const preferred = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', preferred);
+})();
+</script>
+<style>
+th.col-resizable-header {
+  position: relative;
+}
+
+.col-resize-grip {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+}
+
+.col-resize-grip:hover {
+  background: color-mix(in srgb, var(--accent, #4f7cff) 35%, transparent);
+}
+</style>
+</head>
+<body class="ambient-glow">
+
+<div id="uploadScreen" class="upload-screen">
+  <button class="theme-toggle" id="themeToggleUpload" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+  <h1>Log Analytics Workspaces Dashboard</h1>
+  <p>Upload the <strong>Log Analytics summary CSV</strong> and optional timeseries file exported by <code>get_loganalyticsworkspace.py</code>.<br>Files are parsed locally in your browser.</p>
+  <div id="upload-zone" class="drop-zone" style="max-width:520px;margin:0 auto">
+    <div class="icon">📊</div>
+    <div class="label">Drop your Log Analytics CSV file(s) here</div>
+    <div class="hint">Expected: *_loganalyticsworkspace_summary_*.csv and optional *_loganalyticsworkspace_timeseries_*.csv</div>
+  </div>
+  <input type="file" id="file-input" accept=".csv" multiple style="display:none"
+         title="Expected files: *_loganalyticsworkspace_summary_*.csv and optional *_loganalyticsworkspace_timeseries_*.csv">
+  <div id="upload-status" style="display:none;font-size:12px;color:var(--text-dim);text-align:center"></div>
+  <div style="margin-top:8px;color:var(--text-dim);font-size:13px;text-align:center">- or -</div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px">
+    <a class="btn btn--ghost" href="../index.html">← Go back to portal</a>
+  </div>
+</div>
+
+<div id="dashboardScreen" style="display:none">
+  <div class="topbar">
+    <h1><img src="../assets/delaware-dee-rgb.png" alt="delaware" style="height:28px;margin-right:10px;vertical-align:middle"><span id="dashTitle">Log Analytics Workspaces Dashboard</span></h1>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+      <span class="meta" id="dashMeta"></span>
+      <button class="theme-toggle" id="themeToggle" title="Toggle light / dark mode"><span class="icon-sun">☀️</span><span class="icon-moon">🌙</span></button>
+      <button class="topbar-btn" id="resetColumnWidthsBtn">↔ Reset column widths</button>
+      <a class="topbar-btn" href="../index.html">← Back to portal</a>
+    </div>
+  </div>
+  <div class="filter-bar" id="filterBar"></div>
+  <div class="kpi-row" id="kpis"></div>
+
+  <div class="env-section">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+      <div class="env-icon">▼</div>
+      <h2>Operational Overview</h2>
+      <span class="env-summary" id="overviewSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-2">
+          <div class="card">
+            <h2>Retention Distribution</h2>
+            <div class="storage-chart-wrap"><canvas id="retentionChart"></canvas></div>
+          </div>
+          <div class="card">
+            <h2>Quota Exceeded Status</h2>
+            <div class="storage-chart-wrap"><canvas id="quotaChart"></canvas></div>
+          </div>
+        </div>
+        <div class="row row-full" style="margin-top:12px">
+          <div class="card">
+            <h2>Subscription Overview</h2>
+            <div class="storage-table-wrap"><table class="summary-table" id="subscriptionTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="env-section" id="trendSection" style="display:none">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+      <div class="env-icon">▼</div>
+      <h2>Ingestion Trend</h2>
+      <span class="env-summary" id="trendSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full">
+          <div class="card">
+            <h2>Daily Ingestion (GB)</h2>
+            <div class="storage-chart-wrap"><canvas id="ingestionChart"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="env-section">
+    <div class="env-header" onclick="this.closest('.env-section').classList.toggle('collapsed')">
+      <div class="env-icon">▼</div>
+      <h2>Workspace Detail</h2>
+      <span class="env-summary" id="detailSummary"></span>
+    </div>
+    <div class="env-body">
+      <div class="dashboard" style="padding:0">
+        <div class="row row-full">
+          <div class="card">
+            <div class="storage-table-wrap"><table class="summary-table storage-table" id="detailTable"></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let ALL_ROWS = [];
+let TS_ROWS = [];
+let FILTER_OPTIONS = {};
+let ACTIVE_FILTERS = {};
+let LOADED_FILES = { summary: '', timeseries: '' };
+let RETENTION_CHART = null;
+let QUOTA_CHART = null;
+let INGESTION_CHART = null;
+let FILTER_BAR_EVENTS_BOUND = false;
+
+const FILTER_DEFS = [
+  { key: 'subscription', label: 'Subscription', icon: '📋' },
+  { key: 'location', label: 'Location', icon: '📍' },
+];
+
+function esc(v) {
+  return String(v || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function pf(v) {
+  if (v == null || v === '') return null;
+  const n = parseFloat(String(v).replace(',', '.'));
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseCSV(text) {
+  if (!text) return [];
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const lines = text.split(/\r?\n/).filter(line => line.trim());
+  if (lines.length < 2) return [];
+
+  const headers = lines[0].split(';').map(v => v.trim());
+  return lines.slice(1).map(line => {
+    const cols = line.split(';');
+    const row = {};
+    headers.forEach((h, idx) => { row[h] = (cols[idx] || '').trim(); });
+    return row;
+  });
+}
+
+function normalizeSummaryRows(rows) {
+  return rows.map(r => {
+    const dailyQuota = pf(r.daily_quota_gb);
+    const retention = pf(r.retention_days);
+    const avg7d = pf(r.ingestion_gb_last_7d_avg);
+    return {
+      ...r,
+      subscription: r.subscription_name || r.subscription_id || '',
+      daily_quota_gb_num: dailyQuota,
+      retention_days_num: retention,
+      ingestion_gb_last_7d_avg_num: avg7d,
+      daily_quota_exceeded: String(r.daily_quota_exceeded || '').trim() || 'Unknown',
+    };
+  });
+}
+
+function normalizeTimeseriesRows(rows) {
+  return rows.map(r => ({
+    ...r,
+    ingestion_gb_num: pf(r.ingestion_gb) || 0,
+    search_query_count_num: pf(r.search_query_count) || 0,
+    date: String(r.date || '').slice(0, 10),
+  }));
+}
+
+function backfillIngestionAvgFromTimeseries(summaryRows, timeseriesRows) {
+  if (!Array.isArray(summaryRows) || !Array.isArray(timeseriesRows) || !summaryRows.length || !timeseriesRows.length) {
+    return summaryRows;
+  }
+
+  const byWorkspace = new Map();
+  timeseriesRows.forEach(row => {
+    const workspaceId = String(row.workspace_id || '').trim();
+    if (!workspaceId) return;
+    if (!byWorkspace.has(workspaceId)) byWorkspace.set(workspaceId, []);
+    byWorkspace.get(workspaceId).push(row);
+  });
+
+  summaryRows.forEach(row => {
+    if (row.ingestion_gb_last_7d_avg_num != null) return;
+
+    const workspaceId = String(row.workspace_id || '').trim();
+    const entries = byWorkspace.get(workspaceId) || [];
+    if (!entries.length) return;
+
+    const recent = [...entries]
+      .filter(e => e.date)
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+      .slice(-7);
+
+    if (!recent.length) return;
+    const avg = recent.reduce((sum, e) => sum + (e.ingestion_gb_num || 0), 0) / recent.length;
+    row.ingestion_gb_last_7d_avg_num = avg;
+    row.ingestion_gb_last_7d_avg = avg.toFixed(4);
+  });
+
+  return summaryRows;
+}
+
+function fmtInt(v) {
+  return v == null ? '0' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+
+function fmtNum(v, digits = 1) {
+  return v == null ? '0.0' : Number(v).toLocaleString('en-US', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+function getColumnWidthsKey(tableId) {
+  return `law-col-widths-${tableId}`;
+}
+
+function readColumnWidths(tableId) {
+  try {
+    const raw = localStorage.getItem(getColumnWidthsKey(tableId));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeColumnWidths(tableId, widths) {
+  try {
+    localStorage.setItem(getColumnWidthsKey(tableId), JSON.stringify(widths));
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+function clearDashboardColumnWidths() {
+  try {
+    localStorage.removeItem(getColumnWidthsKey('subscriptionTable'));
+    localStorage.removeItem(getColumnWidthsKey('detailTable'));
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+function enableTableColumnResize(tableId, defaultWidths = []) {
+  const table = document.getElementById(tableId);
+  if (!table || !table.tHead || !table.tHead.rows.length) return;
+
+  table.style.minWidth = 'max-content';
+
+  const savedWidths = readColumnWidths(tableId);
+  const headers = [...table.tHead.rows[0].cells];
+
+  headers.forEach((th, index) => {
+    th.classList.add('col-resizable-header');
+
+    const saved = Number(savedWidths[index]);
+    if (Number.isFinite(saved) && saved >= 60) {
+      th.style.width = `${saved}px`;
+      th.style.minWidth = `${saved}px`;
+    } else {
+      const fallback = Number(defaultWidths[index]);
+      if (Number.isFinite(fallback) && fallback >= 60) {
+        th.style.width = `${fallback}px`;
+        th.style.minWidth = `${fallback}px`;
+      }
+    }
+
+    if (th.querySelector('.col-resize-grip')) return;
+
+    const grip = document.createElement('span');
+    grip.className = 'col-resize-grip';
+    grip.title = 'Drag to resize column';
+
+    grip.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+    });
+
+    grip.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const startX = e.clientX;
+      const startWidth = th.getBoundingClientRect().width;
+
+      const onMove = (moveEvt) => {
+        const delta = moveEvt.clientX - startX;
+        const next = Math.max(60, Math.min(1200, Math.round(startWidth + delta)));
+        th.style.width = `${next}px`;
+        th.style.minWidth = `${next}px`;
+      };
+
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+
+        const current = Math.round(th.getBoundingClientRect().width);
+        const nextWidths = readColumnWidths(tableId);
+        nextWidths[index] = current;
+        writeColumnWidths(tableId, nextWidths);
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+
+    th.appendChild(grip);
+  });
+}
+
+function average(values) {
+  const list = (values || []).filter(v => v != null);
+  if (!list.length) return null;
+  return list.reduce((sum, value) => sum + value, 0) / list.length;
+}
+
+function extractFilterOptions(rows) {
+  const out = {
+    subscription: new Set(),
+    location: new Set(),
+  };
+
+  rows.forEach(r => {
+    if (r.subscription) out.subscription.add(r.subscription);
+    if (r.location) out.location.add(r.location);
+  });
+
+  return {
+    subscription: [...out.subscription].sort(),
+    location: [...out.location].sort(),
+  };
+}
+
+function initFilters() {
+  ACTIVE_FILTERS = {};
+  FILTER_DEFS.forEach(def => { ACTIVE_FILTERS[def.key] = new Set(); });
+}
+
+function filteredRows() {
+  return ALL_ROWS.filter(row => {
+    for (const def of FILTER_DEFS) {
+      const selected = ACTIVE_FILTERS[def.key];
+      if (selected && selected.size && !selected.has(row[def.key] || '')) return false;
+    }
+    return true;
+  });
+}
+
+function quotaChip(value) {
+  if (value == null) return '<span class="storage-chip">n/a</span>';
+  return `<span class="storage-chip">${fmtNum(value, 2)}</span>`;
+}
+
+function boolChip(value) {
+  const v = String(value || '').toLowerCase();
+  if (v === 'true') return '<span class="storage-chip bad">true</span>';
+  if (v === 'false') return '<span class="storage-chip ok">false</span>';
+  return '<span class="storage-chip">n/a</span>';
+}
+
+function renderKpis(rows) {
+  const el = document.getElementById('kpis');
+  if (!rows.length) {
+    el.innerHTML = '<div class="kpi"><div class="label">No data</div><div class="value">-</div></div>';
+    return;
+  }
+
+  const workspaces = rows.length;
+  const locations = new Set(rows.map(r => r.location).filter(Boolean)).size;
+  const avgRetention = average(rows.map(r => r.retention_days_num));
+  const avgQuota = average(rows.map(r => r.daily_quota_gb_num));
+  const quotaExceeded = rows.filter(r => String(r.daily_quota_exceeded).toLowerCase() === 'true').length;
+  const avgIngestion7d = average(rows.map(r => r.ingestion_gb_last_7d_avg_num));
+
+  el.innerHTML = `
+    <div class="kpi"><div class="label">Workspaces</div><div class="value">${fmtInt(workspaces)}</div></div>
+    <div class="kpi"><div class="label">Locations</div><div class="value">${fmtInt(locations)}</div></div>
+    <div class="kpi"><div class="label">Avg Retention (days)</div><div class="value mono">${fmtNum(avgRetention)}</div></div>
+    <div class="kpi"><div class="label">Avg Daily Quota (GB)</div><div class="value mono">${fmtNum(avgQuota, 2)}</div></div>
+    <div class="kpi"><div class="label">Quota Exceeded</div><div class="value">${fmtInt(quotaExceeded)}</div><div class="sub-value">daily_quota_exceeded=true</div></div>
+    <div class="kpi"><div class="label">Avg Ingestion 7d (GB)</div><div class="value mono">${fmtNum(avgIngestion7d, 3)}</div></div>`;
+
+  document.getElementById('overviewSummary').textContent = `${fmtInt(rows.length)} workspace(s) in current filter set`;
+  document.getElementById('detailSummary').textContent = `${fmtInt(rows.length)} visible row(s)`;
+}
+
+function renderSubscriptionTable(rows) {
+  const bySub = new Map();
+  rows.forEach(r => {
+    const key = r.subscription || '-';
+    if (!bySub.has(key)) {
+      bySub.set(key, {
+        subscription: key,
+        workspaces: 0,
+        retention: [],
+        quota: [],
+        ingestion: [],
+        exceeded: 0,
+      });
+    }
+    const item = bySub.get(key);
+    item.workspaces += 1;
+    item.retention.push(r.retention_days_num);
+    item.quota.push(r.daily_quota_gb_num);
+    item.ingestion.push(r.ingestion_gb_last_7d_avg_num);
+    if (String(r.daily_quota_exceeded).toLowerCase() === 'true') item.exceeded += 1;
+  });
+
+  const rowsHtml = [...bySub.values()]
+    .sort((a, b) => b.workspaces - a.workspaces)
+    .map(item => `
+      <tr>
+        <td>${esc(item.subscription)}</td>
+        <td class="num">${fmtInt(item.workspaces)}</td>
+        <td class="num">${fmtNum(average(item.retention))}</td>
+        <td class="num">${fmtNum(average(item.quota), 2)}</td>
+        <td class="num">${fmtNum(average(item.ingestion), 3)}</td>
+        <td class="num">${fmtInt(item.exceeded)}</td>
+      </tr>`)
+    .join('');
+
+  document.getElementById('subscriptionTable').innerHTML = `
+    <thead>
+      <tr>
+        <th>Subscription</th>
+        <th class="num">Workspaces</th>
+        <th class="num">Avg Retention</th>
+        <th class="num">Avg Quota (GB)</th>
+        <th class="num">Avg Ingestion 7d (GB)</th>
+        <th class="num">Exceeded</th>
+      </tr>
+    </thead>
+    <tbody>${rowsHtml}</tbody>`;
+
+  enableTableColumnResize('subscriptionTable', [280, 120, 140, 160, 190, 110]);
+}
+
+function destroyCharts() {
+  if (RETENTION_CHART) { RETENTION_CHART.destroy(); RETENTION_CHART = null; }
+  if (QUOTA_CHART) { QUOTA_CHART.destroy(); QUOTA_CHART = null; }
+  if (INGESTION_CHART) { INGESTION_CHART.destroy(); INGESTION_CHART = null; }
+}
+
+function retentionBucket(days) {
+  if (days == null) return 'Unknown';
+  if (days <= 30) return '≤30 days';
+  if (days <= 90) return '31-90 days';
+  if (days <= 180) return '91-180 days';
+  return '>180 days';
+}
+
+function renderCharts(rows) {
+  destroyCharts();
+
+  const retentionBuckets = new Map();
+  rows.forEach(r => {
+    const key = retentionBucket(r.retention_days_num);
+    retentionBuckets.set(key, (retentionBuckets.get(key) || 0) + 1);
+  });
+
+  const retentionLabels = ['≤30 days', '31-90 days', '91-180 days', '>180 days', 'Unknown'];
+  const retentionCounts = retentionLabels.map(label => retentionBuckets.get(label) || 0);
+
+  const exceededCount = rows.filter(r => String(r.daily_quota_exceeded).toLowerCase() === 'true').length;
+  const okCount = rows.length - exceededCount;
+
+  Chart.defaults.color = getComputedStyle(document.documentElement).getPropertyValue('--text-dim').trim() || '#94a3b8';
+  Chart.defaults.borderColor = getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || '#233044';
+  Chart.defaults.font.family = "'DM Sans',sans-serif";
+
+  RETENTION_CHART = new Chart(document.getElementById('retentionChart').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: retentionLabels,
+      datasets: [{
+        label: 'Workspaces',
+        data: retentionCounts,
+        backgroundColor: ['#22d3ab', '#4f8cff', '#f59e42', '#a78bfa', '#64748b'],
+        borderRadius: 6,
+      }],
+    },
+    options: {
+      maintainAspectRatio: false,
+      scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
+      plugins: { legend: { display: false } },
+    },
+  });
+
+  QUOTA_CHART = new Chart(document.getElementById('quotaChart').getContext('2d'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Exceeded', 'Within Quota'],
+      datasets: [{
+        data: [exceededCount, okCount],
+        backgroundColor: ['#ef4444', '#22d3ab'],
+        borderWidth: 1,
+      }],
+    },
+    options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } },
+  });
+
+  if (!TS_ROWS.length) {
+    document.getElementById('trendSection').style.display = 'none';
+    return;
+  }
+
+  const bucket = new Map();
+  TS_ROWS.forEach(r => {
+    if (!r.date) return;
+    bucket.set(r.date, (bucket.get(r.date) || 0) + r.ingestion_gb_num);
+  });
+  const labels = [...bucket.keys()].sort();
+  const values = labels.map(d => bucket.get(d));
+
+  if (!labels.length) {
+    document.getElementById('trendSection').style.display = 'none';
+    return;
+  }
+
+  document.getElementById('trendSection').style.display = 'block';
+  document.getElementById('trendSummary').textContent = `${fmtInt(labels.length)} day(s) with telemetry`; 
+
+  INGESTION_CHART = new Chart(document.getElementById('ingestionChart').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Ingestion (GB)',
+        data: values,
+        borderColor: '#4f8cff',
+        backgroundColor: 'rgba(79,140,255,0.2)',
+        tension: 0.25,
+        fill: true,
+      }],
+    },
+    options: { maintainAspectRatio: false },
+  });
+}
+
+function renderDetailTable(rows) {
+  const sorted = [...rows].sort((a, b) => (b.ingestion_gb_last_7d_avg_num || 0) - (a.ingestion_gb_last_7d_avg_num || 0));
+  const body = sorted.map(r => `
+    <tr>
+      <td>${esc(r.subscription || '-')}</td>
+      <td>${esc(r.resource_group || '-')}</td>
+      <td>${esc(r.workspace_name || '-')}</td>
+      <td>${esc(r.location || '-')}</td>
+      <td class="num" data-v="${r.daily_quota_gb_num || 0}">${quotaChip(r.daily_quota_gb_num)}</td>
+      <td>${boolChip(r.daily_quota_exceeded)}</td>
+      <td class="num" data-v="${r.retention_days_num || 0}">${fmtNum(r.retention_days_num)}</td>
+      <td class="num" data-v="${r.ingestion_gb_last_7d_avg_num || 0}">${fmtNum(r.ingestion_gb_last_7d_avg_num, 3)}</td>
+      <td>${esc(r.created_date || '-')}</td>
+    </tr>`).join('');
+
+  document.getElementById('detailTable').innerHTML = `
+    <thead>
+      <tr>
+        <th>Subscription</th>
+        <th>Resource Group</th>
+        <th>Workspace</th>
+        <th>Location</th>
+        <th class="num">Daily Quota (GB)</th>
+        <th>Exceeded</th>
+        <th class="num">Retention (days)</th>
+        <th class="num">Ingestion 7d Avg (GB)</th>
+        <th>Created</th>
+      </tr>
+    </thead>
+    <tbody>${body}</tbody>`;
+
+  enableTableColumnResize('detailTable', [220, 180, 220, 130, 150, 110, 130, 180, 140]);
+}
+
+function applyFilters() {
+  const rows = filteredRows();
+  renderKpis(rows);
+  renderCharts(rows);
+  renderSubscriptionTable(rows);
+  renderDetailTable(rows);
+}
+
+function updateUploadStatus() {
+  const el = document.getElementById('upload-status');
+  if (!LOADED_FILES.summary && !LOADED_FILES.timeseries) {
+    el.style.display = 'none';
+    el.textContent = '';
+    return;
+  }
+  el.style.display = 'block';
+  el.textContent = `Loaded: ${LOADED_FILES.summary || '-'}${LOADED_FILES.timeseries ? ' • ' + LOADED_FILES.timeseries : ''}`;
+}
+
+function showDashboard() {
+  document.getElementById('uploadScreen').style.display = 'none';
+  document.getElementById('dashboardScreen').style.display = 'block';
+
+  const customerMatch = (LOADED_FILES.summary || '').match(/^([A-Za-z0-9]+)_loganalyticsworkspace_summary_/i);
+  const customer = customerMatch ? customerMatch[1].toUpperCase() : '';
+  document.getElementById('dashTitle').textContent = (customer ? `${customer} - ` : '') + 'Log Analytics Workspaces Dashboard';
+  document.getElementById('dashMeta').innerHTML = `<span style="color:var(--green)">✓ summary</span>${LOADED_FILES.timeseries ? ' · <span style="color:var(--green)">✓ timeseries</span>' : ''}`;
+
+  FILTER_OPTIONS = extractFilterOptions(ALL_ROWS);
+  initFilters();
+  buildFilterBar();
+  applyFilters();
+}
+
+function isSummaryFile(name) {
+  return /_loganalyticsworkspace_summary_/i.test(name || '');
+}
+
+function isTimeseriesFile(name) {
+  return /_loganalyticsworkspace_timeseries_/i.test(name || '');
+}
+
+function processLoadedFiles(files) {
+  let summaryRows = [];
+  let tsRows = [];
+
+  files.forEach(file => {
+    const rows = parseCSV(file.content || '');
+    if (isSummaryFile(file.name)) {
+      summaryRows = normalizeSummaryRows(rows);
+      LOADED_FILES.summary = file.name;
+    } else if (isTimeseriesFile(file.name)) {
+      tsRows = normalizeTimeseriesRows(rows);
+      LOADED_FILES.timeseries = file.name;
+    }
+  });
+
+  if (!summaryRows.length) {
+    alert('Summary file is required: *_loganalyticsworkspace_summary_*.csv');
+    return;
+  }
+
+  summaryRows = backfillIngestionAvgFromTimeseries(summaryRows, tsRows);
+
+  ALL_ROWS = summaryRows;
+  TS_ROWS = tsRows;
+  updateUploadStatus();
+  showDashboard();
+}
+
+function processLoadedFilesByType(loadedFiles) {
+  const organized = organizeLoadedFiles(loadedFiles || []);
+  const summaryFile = (loadedFiles || []).find(f => f.type === 'summary');
+  const timeseriesFile = (loadedFiles || []).find(f => f.type === 'timeseries');
+
+  const files = [];
+  if (organized.summaryContent) {
+    files.push({
+      name: summaryFile?.name || 'CUST_loganalyticsworkspace_summary.csv',
+      content: organized.summaryContent,
+    });
+  }
+  if (organized.timeseriesContent) {
+    files.push({
+      name: timeseriesFile?.name || 'CUST_loganalyticsworkspace_timeseries.csv',
+      content: organized.timeseriesContent,
+    });
+  }
+
+  processLoadedFiles(files);
+}
+
+function buildFilterBar() {
+  const bar = document.getElementById('filterBar');
+  if (!bar) return;
+
+  bar.innerHTML = '<span class="filter-label">Filters</span>';
+
+  FILTER_DEFS.forEach(def => {
+    const options = FILTER_OPTIONS[def.key] || [];
+    const active = ACTIVE_FILTERS[def.key] || new Set();
+    const group = document.createElement('div');
+    group.className = 'filter-group';
+    group.dataset.key = def.key;
+
+    const selectedCount = active.size;
+    const countLabel = selectedCount === 0 ? 'All' : selectedCount === options.length ? 'All' : `${selectedCount}/${options.length}`;
+
+    group.innerHTML = `
+      <button class="filter-btn">
+        ${def.icon} ${def.label} <span class="count">${countLabel}</span> <span class="arrow">▼</span>
+      </button>
+      <div class="filter-dropdown">
+        <div class="filter-actions">
+          <button data-action="all">Select All</button>
+          <button data-action="none">Select None</button>
+          <button data-action="invert">Invert</button>
+        </div>
+        <div class="filter-search"><input type="text" placeholder="Search..."></div>
+        <div class="filter-list"></div>
+      </div>`;
+
+    const list = group.querySelector('.filter-list');
+    const isAllSelected = active.size === 0;
+
+    options.forEach(opt => {
+      const checked = isAllSelected || active.has(opt);
+      const item = document.createElement('div');
+      item.className = 'filter-item';
+      item.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''} value="${esc(opt)}"><label title="${esc(opt)}">${esc(opt)}</label>`;
+
+      item.querySelector('input').addEventListener('change', () => onFilterCheck(def.key));
+      item.querySelector('label').addEventListener('click', (e) => {
+        e.preventDefault();
+        const cb = item.querySelector('input');
+        cb.checked = !cb.checked;
+        onFilterCheck(def.key);
+      });
+      list.appendChild(item);
+    });
+
+    group.querySelector('.filter-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const wasOpen = group.classList.contains('open');
+      document.querySelectorAll('.filter-group').forEach(g => g.classList.remove('open'));
+      if (!wasOpen) group.classList.add('open');
+    });
+
+    group.querySelector('.filter-search input').addEventListener('input', (e) => {
+      const q = e.target.value.toLowerCase();
+      list.querySelectorAll('.filter-item').forEach(item => {
+        const val = item.querySelector('input').value.toLowerCase();
+        item.style.display = val.includes(q) ? '' : 'none';
+      });
+    });
+
+    group.querySelectorAll('.filter-actions button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.dataset.action;
+        const checkboxes = list.querySelectorAll('input[type=checkbox]');
+        if (action === 'all') checkboxes.forEach(cb => { if (cb.closest('.filter-item').style.display !== 'none') cb.checked = true; });
+        else if (action === 'none') checkboxes.forEach(cb => { if (cb.closest('.filter-item').style.display !== 'none') cb.checked = false; });
+        else if (action === 'invert') checkboxes.forEach(cb => { if (cb.closest('.filter-item').style.display !== 'none') cb.checked = !cb.checked; });
+        onFilterCheck(def.key);
+      });
+    });
+
+    bar.appendChild(group);
+  });
+
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'filter-reset-all';
+  resetBtn.textContent = 'Reset All';
+  resetBtn.addEventListener('click', () => {
+    FILTER_DEFS.forEach(def => { ACTIVE_FILTERS[def.key] = new Set(); });
+    buildFilterBar();
+    applyFilters();
+  });
+  bar.appendChild(resetBtn);
+
+  if (!FILTER_BAR_EVENTS_BOUND) {
+    document.addEventListener('click', () => {
+      document.querySelectorAll('.filter-group').forEach(g => g.classList.remove('open'));
+    });
+    bar.addEventListener('click', (e) => e.stopPropagation());
+    FILTER_BAR_EVENTS_BOUND = true;
+  }
+}
+
+function onFilterCheck(filterKey) {
+  const group = document.querySelector(`.filter-group[data-key="${filterKey}"]`);
+  if (!group) return;
+
+  const checkboxes = group.querySelectorAll('.filter-list input[type=checkbox]');
+  const allOptions = FILTER_OPTIONS[filterKey] || [];
+  const selected = new Set();
+  checkboxes.forEach(cb => { if (cb.checked) selected.add(cb.value); });
+
+  if (selected.size === allOptions.length || selected.size === 0) {
+    ACTIVE_FILTERS[filterKey] = new Set();
+  } else {
+    ACTIVE_FILTERS[filterKey] = selected;
+  }
+
+  const countEl = group.querySelector('.count');
+  const active = ACTIVE_FILTERS[filterKey];
+  if (countEl) countEl.textContent = active.size === 0 ? 'All' : `${active.size}/${allOptions.length}`;
+
+  applyFilters();
+}
+
+async function handleNativeUpload(nativeFiles) {
+  const files = [];
+  for (const file of nativeFiles) {
+    const content = await file.text();
+    files.push({ name: file.name, content });
+  }
+  processLoadedFiles(files);
+}
+
+window.onFilesLoaded = function(loadedFiles) {
+  processLoadedFilesByType(loadedFiles || []);
+};
+
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('dco-theme', next);
+}
+
+document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+document.getElementById('themeToggleUpload').addEventListener('click', toggleTheme);
+
+const zone = document.getElementById('upload-zone');
+const fileInput = document.getElementById('file-input');
+
+zone.addEventListener('click', () => fileInput.click());
+zone.addEventListener('dragover', event => { event.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', event => {
+  event.preventDefault();
+  zone.classList.remove('dragover');
+  if (event.dataTransfer.files?.length) handleNativeUpload(event.dataTransfer.files);
+});
+fileInput.addEventListener('change', event => {
+  if (event.target.files?.length) handleNativeUpload(event.target.files);
+  fileInput.value = '';
+});
+
+document.getElementById('resetColumnWidthsBtn').addEventListener('click', () => {
+  clearDashboardColumnWidths();
+  applyFilters();
+});
+
+function ensureStorageSpinner() {
+  let spinner = document.getElementById('storageSpinner');
+  if (spinner) return spinner;
+
+  spinner = document.createElement('div');
+  spinner.id = 'storageSpinner';
+  spinner.innerHTML = '<div class="spinner-ring"></div><div class="spinner-label">Loading data from Azure Storage...<div class="spinner-step" id="spinnerStep">Connecting...</div></div>';
+  document.getElementById('uploadScreen').insertBefore(spinner, document.getElementById('uploadScreen').children[1]);
+  return spinner;
+}
+
+function setStorageSpinner(stepText) {
+  const spinner = ensureStorageSpinner();
+  const stepEl = document.getElementById('spinnerStep');
+  if (stepEl && stepText) stepEl.textContent = stepText;
+
+  const uploadScreen = document.getElementById('uploadScreen');
+  if (uploadScreen) {
+    Array.from(uploadScreen.children).forEach(el => {
+      if (el.id === 'storageSpinner') return;
+      if (el.dataset.prevDisplay === undefined) el.dataset.prevDisplay = el.style.display || '';
+      el.style.display = 'none';
+    });
+  }
+
+  spinner.style.display = 'flex';
+}
+
+function hideStorageSpinner() {
+  const spinner = document.getElementById('storageSpinner');
+  if (spinner) spinner.style.display = 'none';
+
+  const uploadScreen = document.getElementById('uploadScreen');
+  if (uploadScreen) {
+    Array.from(uploadScreen.children).forEach(el => {
+      if (el.id === 'storageSpinner') return;
+      const prev = el.dataset.prevDisplay !== undefined ? el.dataset.prevDisplay : '';
+      el.style.display = prev;
+      delete el.dataset.prevDisplay;
+    });
+  }
+}
+
+async function autoLoadFromStorage() {
+  const STORAGE_KEY = 'dco-storage-connection';
+  const hash = window.location.hash;
+  const hasConnection = hash.startsWith('#conn=') || !!localStorage.getItem(STORAGE_KEY);
+
+  if (hasConnection) {
+    setStorageSpinner('Connecting...');
+  }
+
+  const loaded = await initStorageFileLoader('logAnalyticsWorkspaces', (step) => {
+    setStorageSpinner(step || 'Loading...');
+  });
+
+  if (loaded) return;
+
+  hideStorageSpinner();
+  document.getElementById('uploadScreen').style.display = 'flex';
+}
+
+document.addEventListener('DOMContentLoaded', autoLoadFromStorage);
+</script>
+<script src="../assets/table-sort.js"></script>
+</body>
+</html>
