@@ -36,14 +36,13 @@ KNOWN_DASHBOARDS: Dict[str, Tuple[str, str]] = {
 	"storage_accounts": ("storageAccounts", "Storage Accounts"),
 	"keyvault": ("keyVaults", "Key Vaults"),
 	"keyvaults": ("keyVaults", "Key Vaults"),
-	"app_secret_expiration": ("appSecretExpirations", "App Secret Expirations"),
-	"app_secret_expirations": ("appSecretExpirations", "App Secret Expirations"),
+	"app_secret_expiration": ("appSecretExpirations", "Entra ID App Registrations"),
+	"app_secret_expirations": ("appSecretExpirations", "Entra ID App Registrations"),
 	"loganalyticsworkspace": ("logAnalyticsWorkspaces", "Log Analytics Workspaces"),
 	"log_analytics_workspace": ("logAnalyticsWorkspaces", "Log Analytics Workspaces"),
 	"log_analytics": ("logAnalyticsWorkspaces", "Log Analytics Workspaces"),
 	"daily_costs": ("azureCosts", "Azure Costs"),
-	"quota_consumption_trends": ("quotaConsumptionTrends", "Quota Consumption Trends"),
-	"quota_consumption": ("quotaConsumptionTrends", "Quota Consumption Trends"),
+	"quota_consumption": ("quotaConsumption", "Quota Consumption"),
 }
 
 TYPE_SORT_ORDER = {
@@ -65,7 +64,7 @@ DASHBOARD_ORDER = [
 	"appSecretExpirations",
 	"logAnalyticsWorkspaces",
 	"azureCosts",
-	"quotaConsumptionTrends",
+	"quotaConsumption",
 ]
 
 
@@ -115,6 +114,37 @@ def parse_date_from_filename(filename: str) -> Tuple[Optional[str], Optional[str
 	return None, None
 
 
+def read_summary_export_timestamp(file_path: Path) -> Optional[str]:
+	"""Resolve export timestamp for a summary file.
+
+	Priority:
+	1) export_generated_at_utc column in first data row (legacy format)
+	2) file modification time (UTC)
+	"""
+	if file_path.suffix.lower() != ".csv":
+		return datetime.fromtimestamp(file_path.stat().st_mtime, tz=timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+	try:
+		with file_path.open(newline="", encoding="utf-8-sig") as fh:
+			reader = csv.DictReader(fh, delimiter=";")
+			if not reader.fieldnames:
+				raise ValueError("Missing header")
+			if "export_generated_at_utc" not in [h.strip() for h in reader.fieldnames if h]:
+				raise ValueError("Column absent")
+			first_row = next(reader, None)
+			if not first_row:
+				raise ValueError("No data rows")
+			value = (first_row.get("export_generated_at_utc") or "").strip()
+			if value:
+				return value
+	except (OSError, csv.Error, ValueError):
+		pass
+
+	try:
+		return datetime.fromtimestamp(file_path.stat().st_mtime, tz=timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+	except OSError:
+		return None
+
+
 def parse_report_file(file_path: Path) -> Optional[Dict[str, Any]]:
 	name = file_path.name
 
@@ -129,6 +159,9 @@ def parse_report_file(file_path: Path) -> Optional[Dict[str, Any]]:
 	)
 	compact_timestamp_summary_pattern = re.compile(
 		r"^(?P<customer>[A-Za-z0-9]+)_(?P<metric>.+)_summary_(?P<stamp>\d{8}_\d{4})\.csv$"
+	)
+	compact_date_summary_pattern = re.compile(
+		r"^(?P<customer>[A-Za-z0-9]+)_(?P<metric>.+)_summary_(?P<stamp>\d{8})\.csv$"
 	)
 
 	match = daily_costs_pattern.match(name)
@@ -158,7 +191,7 @@ def parse_report_file(file_path: Path) -> Optional[Dict[str, Any]]:
 		date_from = match.group("date_from")
 		date_to = match.group("date_to")
 		dashboard_id, dashboard_title = metric_to_dashboard(metric)
-		return {
+		entry_file = {
 			"customer": customer,
 			"kind": "dashboard_file",
 			"dashboard_id": dashboard_id,
@@ -170,6 +203,11 @@ def parse_report_file(file_path: Path) -> Optional[Dict[str, Any]]:
 				"date_to": date_to,
 			},
 		}
+		if file_type == "summary":
+			export_ts = read_summary_export_timestamp(file_path)
+			if export_ts:
+				entry_file["file"]["export_generated_at_utc"] = export_ts
+		return entry_file
 
 	match = single_day_summary_pattern.match(name)
 	if match:
@@ -177,7 +215,7 @@ def parse_report_file(file_path: Path) -> Optional[Dict[str, Any]]:
 		metric = match.group("metric")
 		date_value = match.group("date")
 		dashboard_id, dashboard_title = metric_to_dashboard(metric)
-		return {
+		entry_file = {
 			"customer": customer,
 			"kind": "dashboard_file",
 			"dashboard_id": dashboard_id,
@@ -189,6 +227,10 @@ def parse_report_file(file_path: Path) -> Optional[Dict[str, Any]]:
 				"date_to": date_value,
 			},
 		}
+		export_ts = read_summary_export_timestamp(file_path)
+		if export_ts:
+			entry_file["file"]["export_generated_at_utc"] = export_ts
+		return entry_file
 
 	match = compact_timestamp_summary_pattern.match(name)
 	if match:
@@ -197,7 +239,7 @@ def parse_report_file(file_path: Path) -> Optional[Dict[str, Any]]:
 		stamp = match.group("stamp")
 		date_value = f"{stamp[0:4]}-{stamp[4:6]}-{stamp[6:8]}"
 		dashboard_id, dashboard_title = metric_to_dashboard(metric)
-		return {
+		entry_file = {
 			"customer": customer,
 			"kind": "dashboard_file",
 			"dashboard_id": dashboard_id,
@@ -209,6 +251,34 @@ def parse_report_file(file_path: Path) -> Optional[Dict[str, Any]]:
 				"date_to": date_value,
 			},
 		}
+		export_ts = read_summary_export_timestamp(file_path)
+		if export_ts:
+			entry_file["file"]["export_generated_at_utc"] = export_ts
+		return entry_file
+
+	match = compact_date_summary_pattern.match(name)
+	if match:
+		customer = match.group("customer")
+		metric = match.group("metric")
+		stamp = match.group("stamp")
+		date_value = f"{stamp[0:4]}-{stamp[4:6]}-{stamp[6:8]}"
+		dashboard_id, dashboard_title = metric_to_dashboard(metric)
+		entry_file = {
+			"customer": customer,
+			"kind": "dashboard_file",
+			"dashboard_id": dashboard_id,
+			"dashboard_title": dashboard_title,
+			"file": {
+				"type": "summary",
+				"filename": name,
+				"date_from": date_value,
+				"date_to": date_value,
+			},
+		}
+		export_ts = read_summary_export_timestamp(file_path)
+		if export_ts:
+			entry_file["file"]["export_generated_at_utc"] = export_ts
+		return entry_file
 
 	if re.match(r"^subscriptions_.*\.csv$", name):
 		return {
@@ -348,6 +418,33 @@ def has_csv_data_rows(file_path: Path) -> bool:
 		return False
 
 
+def resolve_customer_name(customer_code: str, report_dir: Path, existing_manifest: Dict[str, Any]) -> str:
+	"""Resolve full customer name from customers/<CODE>.json with safe fallbacks."""
+	existing_name = str(existing_manifest.get("customer_name") or "").strip()
+	code = str(customer_code or "").strip()
+	if not code:
+		return existing_name
+
+	code_upper = code.upper()
+	candidates = [
+		Path(__file__).resolve().parents[1] / "customers" / f"{code_upper}.json",
+		report_dir.parent / "customers" / f"{code_upper}.json",
+	]
+
+	for customer_path in candidates:
+		if not customer_path.exists():
+			continue
+		try:
+			payload = json.loads(customer_path.read_text(encoding="utf-8"))
+			full_name = str(payload.get("customer_name") or "").strip()
+			if full_name:
+				return full_name
+		except (OSError, json.JSONDecodeError):
+			continue
+
+	return existing_name or code
+
+
 def build_manifest(report_dir: Path, existing_manifest: Dict[str, Any]) -> Dict[str, Any]:
 	discovered = []
 	for file_path in report_dir.iterdir():
@@ -362,6 +459,7 @@ def build_manifest(report_dir: Path, existing_manifest: Dict[str, Any]) -> Dict[
 
 	discovered_customer = next((item.get("customer") for item in discovered if item.get("customer")), None)
 	customer = discovered_customer or existing_manifest.get("customer") or report_dir.name.split("_", 1)[0]
+	customer_name = resolve_customer_name(customer, report_dir, existing_manifest)
 
 	existing_dashboards = existing_manifest.get("dashboards", []) if isinstance(existing_manifest.get("dashboards"), list) else []
 	by_dashboard: Dict[str, Dict[str, Any]] = {
@@ -428,6 +526,7 @@ def build_manifest(report_dir: Path, existing_manifest: Dict[str, Any]) -> Dict[
 
 	return {
 		"customer": customer,
+		"customer_name": customer_name,
 		"generated_at": datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ"),
 		"date_range": date_range,
 		"dashboards": dashboard_list,

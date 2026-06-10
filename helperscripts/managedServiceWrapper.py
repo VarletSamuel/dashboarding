@@ -17,7 +17,7 @@ Scripts run (in order):
     1. get_subscriptions.py
     2. get_daily_costs.py
     3. get_reservations_commitments.py
-    4. get_quota_consumption_trends.py
+    4. get_quota_consumption.py
     5. get_virtualmachines.py
     6. get_containerApps.py
     7. get_appserviceplans.py
@@ -28,6 +28,7 @@ Scripts run (in order):
     12. get_sql.py
     13. get_eventhubnamespaces.py
     14. get_loganalyticsworkspace.py
+    15. fill_qc_template.py  (optional — add --fill-qc to enable)
 
 Extractor scripts are expected in the sibling `extractor/` folder.
 Output is written to <output-dir>/<CUSTOMER>/.
@@ -38,10 +39,13 @@ Usage
     python managedServiceWrapper.py -c CUST -i ../customers/CUST.json --output-dir ../reports
     python managedServiceWrapper.py -c CUST --from 2026-02-01 --to 2026-04-20
     python managedServiceWrapper.py -c CUST --lookback PT6H
-    python managedServiceWrapper.py -c CUST --skip get_subscriptions get_daily_costs get_reservations_commitments get_quota_consumption_trends get_virtualmachines get_containerApps get_appserviceplans get_storage_accounts get_keyvaults get_app_secrets_expiry get_postgresql get_sql get_eventhubnamespaces get_loganalyticsworkspace
+    python managedServiceWrapper.py -c CUST --skip get_subscriptions get_daily_costs get_reservations_commitments get_quota_consumption get_virtualmachines get_containerApps get_appserviceplans get_storage_accounts get_keyvaults get_app_secrets_expiry get_postgresql get_sql get_eventhubnamespaces get_loganalyticsworkspace
     python managedServiceWrapper.py -c CUST --skip-login
     python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-client-secret <secret>
     python managedServiceWrapper.py -c CUST --sp-client-id <appId> --sp-certificate /path/to/cert.pem
+    python managedServiceWrapper.py -c CUST --fill-qc
+    python managedServiceWrapper.py -c CUST --fill-qc --qc-template-version 1.1
+    python managedServiceWrapper.py -c CUST --fill-qc --storage-connection-string "<conn>"
 """
 
 import argparse
@@ -755,14 +759,12 @@ examples:
     parser.add_argument(
         "--from", dest="date_from", default=None,
            help="Start date YYYY-MM-DD (forwarded to get_daily_costs, "
-               "get_quota_consumption_trends, "
                "get_eventhubnamespaces, get_containerApps, get_appserviceplans, get_postgresql). "
                "Default: first day of previous month.",
     )
     parser.add_argument(
         "--to", dest="date_to", default=None,
            help="End date YYYY-MM-DD (forwarded to get_daily_costs, "
-               "get_quota_consumption_trends, "
                "get_eventhubnamespaces, get_containerApps, get_appserviceplans, get_postgresql). "
                "Default: today.",
     )
@@ -789,7 +791,7 @@ examples:
         default=[],
         help="One or more script names to skip (without .py extension). "
              "Choices: get_subscriptions  get_daily_costs  get_reservations_commitments  "
-               "get_quota_consumption_trends  "
+                             "get_quota_consumption  "
                "get_virtualmachines  get_containerApps  get_appserviceplans  get_storage_accounts  "
                "get_keyvaults  get_app_secrets_expiry  get_postgresql  get_sql  get_eventhubnamespaces  "
                              "get_loganalyticsworkspace",
@@ -800,6 +802,31 @@ examples:
         metavar="SCRIPT",
         default=[],
         help="Run ONLY the listed script(s) — overrides --skip.",
+    )
+
+    # ── Quality Controls document generation ──────────────────────────────────
+    parser.add_argument(
+        "--fill-qc",
+        action="store_true",
+        help="Run fill_qc_template.py after all extractors complete to generate a QC DOCX.",
+    )
+    parser.add_argument(
+        "--qc-template",
+        default=None,
+        metavar="DOCX_PATH",
+        help="Path to the QC template DOCX (forwarded to fill_qc_template.py).",
+    )
+    parser.add_argument(
+        "--qc-template-version",
+        default=None,
+        metavar="VERSION",
+        help="Template version suffix, e.g. 1.1 or SYNH (forwarded to fill_qc_template.py).",
+    )
+    parser.add_argument(
+        "--qc-output",
+        default=None,
+        metavar="OUTPUT_PATH",
+        help="Output path for the generated QC DOCX (forwarded to fill_qc_template.py).",
     )
 
     return parser
@@ -911,7 +938,7 @@ def main() -> None:
         ("get_subscriptions",      "Subscriptions",        []),
         ("get_daily_costs",        "Daily Costs",          date_args),
         ("get_reservations_commitments", "Reservations Commitments", commitments_extra),
-        ("get_quota_consumption_trends", "Quota Consumption Trends", date_args),
+        ("get_quota_consumption", "Quota Consumption", []),
         ("get_virtualmachines",    "Virtual Machines",      lookback_args if lookback_args else date_args),
         ("get_containerApps",      "Container Apps",        lookback_args if lookback_args else date_args),
         ("get_appserviceplans",    "App Service Plans",     lookback_args if lookback_args else date_args),
@@ -1068,6 +1095,33 @@ def main() -> None:
                 _print_warning("  ⚠  Manifest upload stage failed")
         except Exception as exc:
             _print_warning(f"  ⚠  Blob upload failed; local files are preserved: {exc}")
+
+    # ── QC document generation (optional) ──────────────────────────────────
+    if args.fill_qc:
+        _banner("Generating QC Document")
+        fill_qc_script = SCRIPT_DIR / "fill_qc_template.py"
+        if not fill_qc_script.exists():
+            _print_warning(f"  ⚠  fill_qc_template.py not found: {fill_qc_script}")
+        else:
+            fill_qc_args = [
+                "-c", customer,
+                "--reports-dir", str(output_root),
+            ]
+            if args.qc_template:
+                fill_qc_args += ["--template", args.qc_template]
+            if args.qc_template_version:
+                fill_qc_args += ["--template-version", args.qc_template_version]
+            if args.qc_output:
+                fill_qc_args += ["--output", args.qc_output]
+            if args.storage_connection_string and blob_prefix is not None:
+                fill_qc_args += [
+                    "--storage-connection-string", args.storage_connection_string,
+                    "--storage-container", args.storage_container,
+                    "--storage-prefix", blob_prefix,
+                ]
+            qc_ok = run_script(fill_qc_script, fill_qc_args, "QC Template")
+            if not qc_ok:
+                _print_warning("  ⚠  QC document generation failed (extraction results are still available)")
 
     if any(r == "failed" for r in results.values()):
         sys.exit(1)
